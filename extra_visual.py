@@ -18,12 +18,13 @@ def visualize_image_with_bboxes(image_path, json_file, root_dir, transform=None)
     dataset = YOLOv8COCODataset(
         json_file=json_file,
         root_dir=root_dir,
-        transform=None
+        transform=transform
     )
 
     # Iterate through the dataset and find the image
     for data in dataset:
         img, bboxes, img_path = data
+        print(bboxes)
         if img_path == image_path:  # Check if this is the correct image
             print(f"Found image: {img_path}")
             break
