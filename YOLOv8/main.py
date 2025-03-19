@@ -3,13 +3,11 @@ import copy
 import csv
 import os
 import warnings
-
 import numpy
 import torch
 import tqdm
 import yaml
 from torch.utils import data
-
 from nets import nn
 from utils import util
 from utils.dataset import Dataset
@@ -52,13 +50,13 @@ def train(args, params):
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr, last_epoch=-1)
 
     # EMA
-    ema = util.EMA(model) if args.local_rank == 0 else None
+    ema = util.EMA(model) if args.local_rank == os.environ['LOCAL_RANK'] else None
 
     filenames = []
-    with open('../Dataset/COCO/train2017.txt') as reader:
-        for filename in reader.readlines():
-            filename = filename.rstrip().split('/')[-1]
-            filenames.append('../Dataset/COCO/images/train2017/' + filename)
+    path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/"
+    with open(f'{path}Dataset/train.txt') as reader:
+        for filepath in reader.readlines():
+            filenames.append(filepath.strip())
 
     dataset = Dataset(filenames, args.input_size, params, True)
 
@@ -68,7 +66,7 @@ def train(args, params):
         sampler = data.distributed.DistributedSampler(dataset)
 
     loader = data.DataLoader(dataset, args.batch_size, sampler is None, sampler,
-                             num_workers=8, pin_memory=True, collate_fn=Dataset.collate_fn)
+                             num_workers=32, pin_memory=True, collate_fn=Dataset.collate_fn)
 
     if args.world_size > 1:
         # DDP mode
@@ -83,11 +81,15 @@ def train(args, params):
     amp_scale = torch.cuda.amp.GradScaler()
     criterion = util.ComputeLoss(model, params)
     num_warmup = max(round(params['warmup_epochs'] * num_batch), 1000)
+
+    print(f"Starting training loop for {args.epochs} epochs...")
+
     with open('weights/step.csv', 'w') as f:
         if args.local_rank == 0:
             writer = csv.DictWriter(f, fieldnames=['epoch', 'mAP@50', 'mAP'])
             writer.writeheader()
         for epoch in range(args.epochs):
+            print(f"\nEpoch {epoch + 1}/{args.epochs} started.")
             model.train()
 
             if args.epochs - epoch == 10:
@@ -160,6 +162,7 @@ def train(args, params):
             scheduler.step()
 
             if args.local_rank == 0:
+                print(f"Epoch {epoch + 1}/{args.epochs} completed. Testing model...")
                 # mAP
                 last = test(args, params, ema.ema)
                 writer.writerow({'mAP': str(f'{last[1]:.3f}'),
@@ -181,6 +184,7 @@ def train(args, params):
                 del ckpt
 
     if args.local_rank == 0:
+        print("Finalizing training and stripping optimizer...")
         util.strip_optimizer('./weights/best.pt')  # strip optimizers
         util.strip_optimizer('./weights/last.pt')  # strip optimizers
 
@@ -284,21 +288,25 @@ def test(args, params, model=None):
 
 
 def main():
+    print("Starting main function")
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input-size', default=640, type=int)
-    parser.add_argument('--batch-size', default=32, type=int)
+    parser.add_argument('--input-size', default=384, type=int)
+    parser.add_argument('--batch-size', default=128, type=int)
     parser.add_argument('--local_rank', default=0, type=int)
-    parser.add_argument('--epochs', default=500, type=int)
+    parser.add_argument('--epochs', default=5, type=int)
     parser.add_argument('--train', action='store_true')
     parser.add_argument('--test', action='store_true')
-
     args = parser.parse_args()
-
-    args.local_rank = int(os.getenv('LOCAL_RANK', 0))
+    args.local_rank = int(os.environ.get('LOCAL_RANK', 0))
     args.world_size = int(os.getenv('WORLD_SIZE', 1))
+    print(f"Args parsed: {args}")
+    print(f"Process {args.local_rank} using GPU {torch.cuda.current_device()}")
 
+    print(f"WORLD_SIZE: {os.environ.get('WORLD_SIZE', 'not set')}")
     if args.world_size > 1:
-        torch.cuda.set_device(device=args.local_rank)
+        torch.cuda.set_device(device=args.local_rank % torch.cuda.device_count())  # Ensures valid GPU assignment
+        print(
+            f"Process {args.local_rank} using GPU {torch.cuda.current_device()} out of {torch.cuda.device_count()} GPUs")
         torch.distributed.init_process_group(backend='nccl', init_method='env://')
 
     if args.local_rank == 0:
