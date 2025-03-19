@@ -1,7 +1,6 @@
 import math
 import os
 import random
-
 import cv2
 import numpy
 import torch
@@ -186,8 +185,17 @@ class Dataset(data.Dataset):
         return torch.stack(samples, 0), torch.cat(targets, 0), shapes
 
     @staticmethod
-    def load_label(filenames):
-        path = f'{os.path.dirname(filenames[0])}.cache'
+    def load_label(filenames, person_only=True):
+        cache_dir = os.path.join("/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset", "cache")
+        print(cache_dir)
+        os.makedirs(cache_dir, exist_ok=True)
+        base_name = os.path.basename(os.path.dirname(filenames[0]))
+        print("base_name:", base_name)
+        path = os.path.join(cache_dir, f"{base_name}_label_cache.pt")
+        person_cache_path = os.path.join(cache_dir, f"{base_name}_person_label_cache.pt")
+
+        print(f"Cache path: {path}")
+        print(f"Person cache path: {person_cache_path}")
         if os.path.exists(path):
             return torch.load(path)
         x = {}
