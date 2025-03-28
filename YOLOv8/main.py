@@ -53,8 +53,8 @@ def train(args, params):
     ema = util.EMA(model) if args.local_rank == os.environ['LOCAL_RANK'] else None
 
     filenames = []
-    path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/"
-    with open(f'{path}Dataset/train.txt') as reader:
+    path = r"/ceph/project/P4-concept-drift/YOLOv8-Anton/data"
+    with open(f'{path}/cropped_txt/cropped_train.txt') as reader:
         for filepath in reader.readlines():
             filenames.append(filepath.strip())
 
@@ -194,10 +194,10 @@ def train(args, params):
 @torch.no_grad()
 def test(args, params, model=None):
     filenames = []
-    with open('../Dataset/COCO/val2017.txt') as reader:
-        for filename in reader.readlines():
-            filename = filename.rstrip().split('/')[-1]
-            filenames.append('../Dataset/COCO/images/val2017/' + filename)
+    path = r"/ceph/project/P4-concept-drift/YOLOv8-Anton/data"
+    with open(f'{path}/cropped_txt/cropped_val.txt') as reader:
+        for filepath in reader.readlines():
+            filenames.append(filepath.strip())
 
     dataset = Dataset(filenames, args.input_size, params, False)
     loader = data.DataLoader(dataset, 8, False, num_workers=8,
