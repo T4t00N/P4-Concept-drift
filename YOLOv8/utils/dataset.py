@@ -1,329 +1,419 @@
-import argparse
-import copy
-import csv
+import math
 import os
-import warnings
+import random
+import cv2
 import numpy
 import torch
-import tqdm
-import yaml
+from PIL import Image
 from torch.utils import data
-from nets import nn
-from utils import util
-from utils.dataset import Dataset
-
-warnings.filterwarnings("ignore")
-
-
-def learning_rate(args, params):
-    def fn(x):
-        return (1 - x / args.epochs) * (1.0 - params['lrf']) + params['lrf']
-
-    return fn
-
-
-def train(args, params):
-    # Model
-    model = nn.yolo_v8_n(len(params['names'].values())).cuda()
-
-    # Optimizer
-    accumulate = max(round(64 / (args.batch_size * args.world_size)), 1)
-    params['weight_decay'] *= args.batch_size * args.world_size * accumulate / 64
-
-    p = [], [], []
-    for v in model.modules():
-        if hasattr(v, 'bias') and isinstance(v.bias, torch.nn.Parameter):
-            p[2].append(v.bias)
-        if isinstance(v, torch.nn.BatchNorm2d):
-            p[1].append(v.weight)
-        elif hasattr(v, 'weight') and isinstance(v.weight, torch.nn.Parameter):
-            p[0].append(v.weight)
-
-    optimizer = torch.optim.SGD(p[2], params['lr0'], params['momentum'], nesterov=True)
-
-    optimizer.add_param_group({'params': p[0], 'weight_decay': params['weight_decay']})
-    optimizer.add_param_group({'params': p[1]})
-    del p
-
-    # Scheduler
-    lr = learning_rate(args, params)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr, last_epoch=-1)
-
-    # EMA
-    ema = util.EMA(model) if args.local_rank == os.environ['LOCAL_RANK'] else None
-
-    filenames = []
-    path = r"/ceph/project/P4-concept-drift/YOLOv8-Anton/data"
-    with open(f'{path}/cropped_txt/cropped_train.txt') as reader:
-        for filepath in reader.readlines():
-            filenames.append(filepath.strip())
-
-    dataset = Dataset(filenames, args.input_size, params, True)
-
-    if args.world_size <= 1:
-        sampler = None
-    else:
-        sampler = data.distributed.DistributedSampler(dataset)
-
-    loader = data.DataLoader(dataset, args.batch_size, sampler is None, sampler,
-                             num_workers=32, pin_memory=True, collate_fn=Dataset.collate_fn)
-
-    if args.world_size > 1:
-        # DDP mode
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-        model = torch.nn.parallel.DistributedDataParallel(module=model,
-                                                          device_ids=[args.local_rank],
-                                                          output_device=args.local_rank)
-
-    # Start training
-    best = 0
-    num_batch = len(loader)
-    amp_scale = torch.cuda.amp.GradScaler()
-    criterion = util.ComputeLoss(model, params)
-    num_warmup = max(round(params['warmup_epochs'] * num_batch), 1000)
-
-    print(f"Starting training loop for {args.epochs} epochs...")
-
-    with open('weights/step.csv', 'w') as f:
-        if args.local_rank == 0:
-            writer = csv.DictWriter(f, fieldnames=['epoch', 'mAP@50', 'mAP'])
-            writer.writeheader()
-        for epoch in range(args.epochs):
-            print(f"\nEpoch {epoch + 1}/{args.epochs} started.")
-            model.train()
-
-            if args.epochs - epoch == 10:
-                loader.dataset.mosaic = False
-
-            m_loss = util.AverageMeter()
-            if args.world_size > 1:
-                sampler.set_epoch(epoch)
-            p_bar = enumerate(loader)
-            if args.local_rank == 0:
-                print(('\n' + '%10s' * 3) % ('epoch', 'memory', 'loss'))
-            if args.local_rank == 0:
-                p_bar = tqdm.tqdm(p_bar, total=num_batch)  # progress bar
-
-            optimizer.zero_grad()
-
-            for i, (samples, targets, _) in p_bar:
-                x = i + num_batch * epoch  # number of iterations
-                samples = samples.cuda().float() / 255
-                targets = targets.cuda()
-
-                # Warmup
-                if x <= num_warmup:
-                    xp = [0, num_warmup]
-                    fp = [1, 64 / (args.batch_size * args.world_size)]
-                    accumulate = max(1, numpy.interp(x, xp, fp).round())
-                    for j, y in enumerate(optimizer.param_groups):
-                        if j == 0:
-                            fp = [params['warmup_bias_lr'], y['initial_lr'] * lr(epoch)]
-                        else:
-                            fp = [0.0, y['initial_lr'] * lr(epoch)]
-                        y['lr'] = numpy.interp(x, xp, fp)
-                        if 'momentum' in y:
-                            fp = [params['warmup_momentum'], params['momentum']]
-                            y['momentum'] = numpy.interp(x, xp, fp)
-
-                # Forward
-                with torch.cuda.amp.autocast():
-                    outputs = model(samples)  # forward
-                loss = criterion(outputs, targets)
-
-                m_loss.update(loss.item(), samples.size(0))
-
-                loss *= args.batch_size  # loss scaled by batch_size
-                loss *= args.world_size  # gradient averaged between devices in DDP mode
-
-                # Backward
-                amp_scale.scale(loss).backward()
-
-                # Optimize
-                if x % accumulate == 0:
-                    amp_scale.unscale_(optimizer)  # unscale gradients
-                    util.clip_gradients(model)  # clip gradients
-                    amp_scale.step(optimizer)  # optimizer.step
-                    amp_scale.update()
-                    optimizer.zero_grad()
-                    if ema:
-                        ema.update(model)
-
-                # Log
-                if args.local_rank == 0:
-                    memory = f'{torch.cuda.memory_reserved() / 1E9:.3g}G'  # (GB)
-                    s = ('%10s' * 2 + '%10.4g') % (f'{epoch + 1}/{args.epochs}', memory, m_loss.avg)
-                    p_bar.set_description(s)
-
-                del loss
-                del outputs
-
-            # Scheduler
-            scheduler.step()
-
-            if args.local_rank == 0:
-                print(f"Epoch {epoch + 1}/{args.epochs} completed. Testing model...")
-                # mAP
-                last = test(args, params, ema.ema)
-                writer.writerow({'mAP': str(f'{last[1]:.3f}'),
-                                 'epoch': str(epoch + 1).zfill(3),
-                                 'mAP@50': str(f'{last[0]:.3f}')})
-                f.flush()
-
-                # Update best mAP
-                if last[1] > best:
-                    best = last[1]
-
-                # Save model
-                ckpt = {'model': copy.deepcopy(ema.ema).half()}
-
-                # Save last, best and delete
-                torch.save(ckpt, './weights/last.pt')
-                if best == last[1]:
-                    torch.save(ckpt, './weights/best.pt')
-                del ckpt
-
-    if args.local_rank == 0:
-        print("Finalizing training and stripping optimizer...")
-        util.strip_optimizer('./weights/best.pt')  # strip optimizers
-        util.strip_optimizer('./weights/last.pt')  # strip optimizers
-
-    torch.cuda.empty_cache()
-
-
-@torch.no_grad()
-def test(args, params, model=None):
-    filenames = []
-    path = r"/ceph/project/P4-concept-drift/YOLOv8-Anton/data"
-    with open(f'{path}/cropped_txt/cropped_val.txt') as reader:
-        for filepath in reader.readlines():
-            filenames.append(filepath.strip())
-
-    dataset = Dataset(filenames, args.input_size, params, False)
-    loader = data.DataLoader(dataset, 8, False, num_workers=8,
-                             pin_memory=True, collate_fn=Dataset.collate_fn)
-
-    if model is None:
-        model = torch.load('./weights/best.pt', map_location='cuda')['model'].float()
-
-    model.half()
-    model.eval()
-
-    # Configure
-    iou_v = torch.linspace(0.5, 0.95, 10).cuda()  # iou vector for mAP@0.5:0.95
-    n_iou = iou_v.numel()
-
-    m_pre = 0.
-    m_rec = 0.
-    map50 = 0.
-    mean_ap = 0.
-    metrics = []
-    p_bar = tqdm.tqdm(loader, desc=('%10s' * 3) % ('precision', 'recall', 'mAP'))
-    for samples, targets, shapes in p_bar:
-        samples = samples.cuda()
-        targets = targets.cuda()
-        samples = samples.half()  # uint8 to fp16/32
-        samples = samples / 255  # 0 - 255 to 0.0 - 1.0
-        _, _, height, width = samples.shape  # batch size, channels, height, width
-
-        # Inference
-        outputs = model(samples)
-
-        # NMS
-        targets[:, 2:] *= torch.tensor((width, height, width, height)).cuda()  # to pixels
-        outputs = util.non_max_suppression(outputs, 0.001, 0.65)
-
-        # Metrics
-        for i, output in enumerate(outputs):
-            labels = targets[targets[:, 0] == i, 1:]
-            correct = torch.zeros(output.shape[0], n_iou, dtype=torch.bool).cuda()
-
-            if output.shape[0] == 0:
-                if labels.shape[0]:
-                    metrics.append((correct, *torch.zeros((3, 0)).cuda()))
-                continue
-
-            detections = output.clone()
-            util.scale(detections[:, :4], samples[i].shape[1:], shapes[i][0], shapes[i][1])
-
-            # Evaluate
-            if labels.shape[0]:
-                tbox = labels[:, 1:5].clone()  # target boxes
-                tbox[:, 0] = labels[:, 1] - labels[:, 3] / 2  # top left x
-                tbox[:, 1] = labels[:, 2] - labels[:, 4] / 2  # top left y
-                tbox[:, 2] = labels[:, 1] + labels[:, 3] / 2  # bottom right x
-                tbox[:, 3] = labels[:, 2] + labels[:, 4] / 2  # bottom right y
-                util.scale(tbox, samples[i].shape[1:], shapes[i][0], shapes[i][1])
-
-                correct = numpy.zeros((detections.shape[0], iou_v.shape[0]))
-                correct = correct.astype(bool)
-
-                t_tensor = torch.cat((labels[:, 0:1], tbox), 1)
-                iou = util.box_iou(t_tensor[:, 1:], detections[:, :4])
-                correct_class = t_tensor[:, 0:1] == detections[:, 5]
-                for j in range(len(iou_v)):
-                    x = torch.where((iou >= iou_v[j]) & correct_class)
-                    if x[0].shape[0]:
-                        matches = torch.cat((torch.stack(x, 1), iou[x[0], x[1]][:, None]), 1)
-                        matches = matches.cpu().numpy()
-                        if x[0].shape[0] > 1:
-                            matches = matches[matches[:, 2].argsort()[::-1]]
-                            matches = matches[numpy.unique(matches[:, 1], return_index=True)[1]]
-                            matches = matches[numpy.unique(matches[:, 0], return_index=True)[1]]
-                        correct[matches[:, 1].astype(int), j] = True
-                correct = torch.tensor(correct, dtype=torch.bool, device=iou_v.device)
-            metrics.append((correct, output[:, 4], output[:, 5], labels[:, 0]))
-
-    # Compute metrics
-    metrics = [torch.cat(x, 0).cpu().numpy() for x in zip(*metrics)]  # to numpy
-    if len(metrics) and metrics[0].any():
-        tp, fp, m_pre, m_rec, map50, mean_ap = util.compute_ap(*metrics)
-
-    # Print results
-    print('%10.3g' * 3 % (m_pre, m_rec, mean_ap))
-
-    # Return results
-    model.float()  # for training
-    return map50, mean_ap
-
-
-def main():
-    print("Starting main function")
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--input-size', default=384, type=int)
-    parser.add_argument('--batch-size', default=128, type=int)
-    parser.add_argument('--local_rank', default=0, type=int)
-    parser.add_argument('--epochs', default=5, type=int)
-    parser.add_argument('--train', action='store_true')
-    parser.add_argument('--test', action='store_true')
-    args = parser.parse_args()
-    args.local_rank = int(os.environ.get('LOCAL_RANK', 0))
-    args.world_size = int(os.getenv('WORLD_SIZE', 1))
-    print(f"Args parsed: {args}")
-    print(f"Process {args.local_rank} using GPU {torch.cuda.current_device()}")
-
-    print(f"WORLD_SIZE: {os.environ.get('WORLD_SIZE', 'not set')}")
-    if args.world_size > 1:
-        torch.cuda.set_device(device=args.local_rank % torch.cuda.device_count())  # Ensures valid GPU assignment
-        print(
-            f"Process {args.local_rank} using GPU {torch.cuda.current_device()} out of {torch.cuda.device_count()} GPUs")
-        torch.distributed.init_process_group(backend='nccl', init_method='env://')
-
-    if args.local_rank == 0:
-        if not os.path.exists('weights'):
-            os.makedirs('weights')
-
-    util.setup_seed()
-    util.setup_multi_processes()
-
-    with open(os.path.join('utils', 'args.yaml'), errors='ignore') as f:
-        params = yaml.safe_load(f)
-
-    if args.train:
-        train(args, params)
-    if args.test:
-        test(args, params)
-
-
-if __name__ == "__main__":
-    main()
+from tqdm import tqdm
+
+FORMATS = 'bmp', 'dng', 'jpeg', 'jpg', 'mpo', 'png', 'tif', 'tiff', 'webp'
+
+
+class Dataset(data.Dataset):
+    def __init__(self, filenames, input_size, params, augment):
+        self.params = params
+        self.mosaic = augment
+        self.augment = augment
+        self.input_size = input_size
+
+        # Read labels
+        cache = self.load_label(filenames)
+        labels, shapes = zip(*cache.values())
+        self.labels = list(labels)
+        self.shapes = numpy.array(shapes, dtype=numpy.float64)
+        self.filenames = list(cache.keys())  # update
+        self.n = len(shapes)  # number of samples
+        self.indices = range(self.n)
+        # Albumentations (optional, only used if package is installed)
+        self.albumentations = Albumentations()
+
+    def __getitem__(self, index):
+        index = self.indices[index]
+
+        params = self.params
+        mosaic = self.mosaic and random.random() < params['mosaic']
+
+        if mosaic:
+            shapes = None
+            # Load MOSAIC
+            image, label = self.load_mosaic(index, params)
+            # MixUp augmentation
+            if random.random() < params['mix_up']:
+                index = random.choice(self.indices)
+                mix_image1, mix_label1 = image, label
+                mix_image2, mix_label2 = self.load_mosaic(index, params)
+
+                image, label = mix_up(mix_image1, mix_label1, mix_image2, mix_label2)
+        else:
+            # Load image
+            image, shape = self.load_image(index)
+            h, w = image.shape[:2]
+
+            # Resize
+            image, ratio, pad = resize(image, self.input_size, self.augment)
+            shapes = shape, ((h / shape[0], w / shape[1]), pad)  # for COCO mAP rescaling
+
+            label = self.labels[index].copy()
+            if label.size:
+                label[:, 1:] = wh2xy(label[:, 1:], ratio[0] * w, ratio[1] * h, pad[0], pad[1])
+            if self.augment:
+                image, label = random_perspective(image, label, params)
+        nl = len(label)  # number of labels
+        if nl:
+            label[:, 1:5] = xy2wh(label[:, 1:5], image.shape[1], image.shape[0])
+
+        if self.augment:
+            # Albumentations
+            image, label = self.albumentations(image, label)
+            nl = len(label)  # update after albumentations
+            # HSV color-space
+            augment_hsv(image, params)
+            # Flip up-down
+            if random.random() < params['flip_ud']:
+                image = numpy.flipud(image)
+                if nl:
+                    label[:, 2] = 1 - label[:, 2]
+            # Flip left-right
+            if random.random() < params['flip_lr']:
+                image = numpy.fliplr(image)
+                if nl:
+                    label[:, 1] = 1 - label[:, 1]
+
+        target = torch.zeros((nl, 6))
+        if nl:
+            target[:, 1:] = torch.from_numpy(label)
+
+        # Convert HWC to CHW, BGR to RGB
+        sample = image.transpose((2, 0, 1))[::-1]
+        sample = numpy.ascontiguousarray(sample)
+
+        return torch.from_numpy(sample), target, shapes
+
+    def __len__(self):
+        return len(self.filenames)
+
+    def load_image(self, i):
+        image = cv2.imread(self.filenames[i])
+        h, w = image.shape[:2]
+        r = self.input_size / max(h, w)
+        if r != 1:
+            image = cv2.resize(image,
+                               dsize=(int(w * r), int(h * r)),
+                               interpolation=resample() if self.augment else cv2.INTER_LINEAR)
+        return image, (h, w)
+
+    def load_mosaic(self, index, params):
+        label4 = []
+        image4 = numpy.full((self.input_size * 2, self.input_size * 2, 3), 0, dtype=numpy.uint8)
+        y1a, y2a, x1a, x2a, y1b, y2b, x1b, x2b = (None, None, None, None, None, None, None, None)
+
+        border = [-self.input_size // 2, -self.input_size // 2]
+
+        xc = int(random.uniform(-border[0], 2 * self.input_size + border[1]))
+        yc = int(random.uniform(-border[0], 2 * self.input_size + border[1]))
+
+        indices = [index] + random.choices(self.indices, k=3)
+        random.shuffle(indices)
+
+        for i, index in enumerate(indices):
+            # Load image
+            image, _ = self.load_image(index)
+            shape = image.shape
+            if i == 0:  # top left
+                x1a = max(xc - shape[1], 0)
+                y1a = max(yc - shape[0], 0)
+                x2a = xc
+                y2a = yc
+                x1b = shape[1] - (x2a - x1a)
+                y1b = shape[0] - (y2a - y1a)
+                x2b = shape[1]
+                y2b = shape[0]
+            if i == 1:  # top right
+                x1a = xc
+                y1a = max(yc - shape[0], 0)
+                x2a = min(xc + shape[1], self.input_size * 2)
+                y2a = yc
+                x1b = 0
+                y1b = shape[0] - (y2a - y1a)
+                x2b = min(shape[1], x2a - x1a)
+                y2b = shape[0]
+            if i == 2:  # bottom left
+                x1a = max(xc - shape[1], 0)
+                y1a = yc
+                x2a = xc
+                y2a = min(self.input_size * 2, yc + shape[0])
+                x1b = shape[1] - (x2a - x1a)
+                y1b = 0
+                x2b = shape[1]
+                y2b = min(y2a - y1a, shape[0])
+            if i == 3:  # bottom right
+                x1a = xc
+                y1a = yc
+                x2a = min(xc + shape[1], self.input_size * 2)
+                y2a = min(self.input_size * 2, yc + shape[0])
+                x1b = 0
+                y1b = 0
+                x2b = min(shape[1], x2a - x1a)
+                y2b = min(y2a - y1a, shape[0])
+
+            image4[y1a:y2a, x1a:x2a] = image[y1b:y2b, x1b:x2b]
+            pad_w = x1a - x1b
+            pad_h = y1a - y1b
+
+            # Labels
+            label = self.labels[index].copy()
+            if len(label):
+                label[:, 1:] = wh2xy(label[:, 1:], shape[1], shape[0], pad_w, pad_h)
+            label4.append(label)
+
+        # Concat/clip labels
+        label4 = numpy.concatenate(label4, 0)
+        for x in label4[:, 1:]:
+            numpy.clip(x, 0, 2 * self.input_size, out=x)
+
+        # Augment
+        image4, label4 = random_perspective(image4, label4, params, border)
+
+        return image4, label4
+
+    @staticmethod
+    def collate_fn(batch):
+        samples, targets, shapes = zip(*batch)
+        for i, item in enumerate(targets):
+            item[:, 0] = i  # add target image index
+        return torch.stack(samples, 0), torch.cat(targets, 0), shapes
+
+    @staticmethod
+    def load_label(filenames, person_only=False):
+        cache_dir = os.path.join("/ceph/project/P4-concept-drift/Dataset", "cache")
+        print(cache_dir)
+        os.makedirs(cache_dir, exist_ok=True)
+        base_name = os.path.basename(os.path.dirname(filenames[0]))
+        print("base_name:", base_name)
+        path = os.path.join(cache_dir, f"{base_name}_label_cache.pt")
+        person_cache_path = os.path.join(cache_dir, f"{base_name}_person_label_cache.pt")
+
+        print(f"Cache path: {path}")
+        print(f"Person cache path: {person_cache_path}")
+        if os.path.exists(path):
+            print(f"Loading label from {path}")
+            return torch.load(path)
+        else:
+            print(f"Creating label from {path}")
+        x = {}
+        # Wrap the filenames iterator with tqdm to show a progress bar
+        for filename in tqdm(filenames, desc="Processing labels"):
+            try:
+                # Verify image file
+                with open(filename, 'rb') as f:
+                    image = Image.open(f)
+                    image.verify()  # PIL verify
+                shape = image.size  # image size
+                assert (shape[0] > 9) & (shape[1] > 9), f'image size {shape} <10 pixels'
+                assert image.format.lower() in FORMATS, f'invalid image format {image.format}'
+
+                # Verify labels
+                a = f'{os.sep}images{os.sep}'
+                b = f'{os.sep}labels{os.sep}'
+                label_path = b.join(filename.rsplit(a, 1)).rsplit('.', 1)[0] + '.txt'
+                if os.path.isfile(label_path):
+                    with open(label_path) as f:
+                        label = [x.split() for x in f.read().strip().splitlines() if len(x)]
+                        label = numpy.array(label, dtype=numpy.float32)
+                    nl = len(label)
+                    if nl:
+                        assert label.shape[1] == 5, 'labels require 5 columns'
+                        assert (label >= 0).all(), 'negative label values'
+                        assert (label[:, 1:] <= 1).all(), 'non-normalized coordinates'
+                        _, i = numpy.unique(label, axis=0, return_index=True)
+                        if len(i) < nl:  # remove duplicate rows
+                            label = label[i]
+                    else:
+                        label = numpy.zeros((0, 5), dtype=numpy.float32)
+                else:
+                    label = numpy.zeros((0, 5), dtype=numpy.float32)
+                if filename:
+                    x[filename] = [label, shape]
+            except FileNotFoundError:
+                pass
+        torch.save(x, path)
+        return x
+
+
+def wh2xy(x, w=640, h=640, pad_w=0, pad_h=0):
+    # Convert nx4 boxes
+    # from [x, y, w, h] normalized to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
+    y = numpy.copy(x)
+    y[:, 0] = w * (x[:, 0] - x[:, 2] / 2) + pad_w  # top left x
+    y[:, 1] = h * (x[:, 1] - x[:, 3] / 2) + pad_h  # top left y
+    y[:, 2] = w * (x[:, 0] + x[:, 2] / 2) + pad_w  # bottom right x
+    y[:, 3] = h * (x[:, 1] + x[:, 3] / 2) + pad_h  # bottom right y
+    return y
+
+
+def xy2wh(x, w=640, h=640):
+    # warning: inplace clip
+    x[:, [0, 2]] = x[:, [0, 2]].clip(0, w - 1E-3)  # x1, x2
+    x[:, [1, 3]] = x[:, [1, 3]].clip(0, h - 1E-3)  # y1, y2
+
+    # Convert nx4 boxes
+    # from [x1, y1, x2, y2] to [x, y, w, h] normalized where xy1=top-left, xy2=bottom-right
+    y = numpy.copy(x)
+    y[:, 0] = ((x[:, 0] + x[:, 2]) / 2) / w  # x center
+    y[:, 1] = ((x[:, 1] + x[:, 3]) / 2) / h  # y center
+    y[:, 2] = (x[:, 2] - x[:, 0]) / w  # width
+    y[:, 3] = (x[:, 3] - x[:, 1]) / h  # height
+    return y
+
+
+def resample():
+    choices = (cv2.INTER_AREA,
+               cv2.INTER_CUBIC,
+               cv2.INTER_LINEAR,
+               cv2.INTER_NEAREST,
+               cv2.INTER_LANCZOS4)
+    return random.choice(seq=choices)
+
+
+def augment_hsv(image, params):
+    # HSV color-space augmentation
+    h = params['hsv_h']
+    s = params['hsv_s']
+    v = params['hsv_v']
+
+    r = numpy.random.uniform(-1, 1, 3) * [h, s, v] + 1
+    h, s, v = cv2.split(cv2.cvtColor(image, cv2.COLOR_BGR2HSV))
+
+    x = numpy.arange(0, 256, dtype=r.dtype)
+    lut_h = ((x * r[0]) % 180).astype('uint8')
+    lut_s = numpy.clip(x * r[1], 0, 255).astype('uint8')
+    lut_v = numpy.clip(x * r[2], 0, 255).astype('uint8')
+
+    im_hsv = cv2.merge((cv2.LUT(h, lut_h), cv2.LUT(s, lut_s), cv2.LUT(v, lut_v)))
+    cv2.cvtColor(im_hsv, cv2.COLOR_HSV2BGR, dst=image)  # no return needed
+
+
+def resize(image, input_size, augment):
+    # Resize and pad image while meeting stride-multiple constraints
+    shape = image.shape[:2]  # current shape [height, width]
+
+    # Scale ratio (new / old)
+    r = min(input_size / shape[0], input_size / shape[1])
+    if not augment:  # only scale down, do not scale up (for better val mAP)
+        r = min(r, 1.0)
+
+    # Compute padding
+    pad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    w = (input_size - pad[0]) / 2
+    h = (input_size - pad[1]) / 2
+
+    if shape[::-1] != pad:  # resize
+        image = cv2.resize(image,
+                           dsize=pad,
+                           interpolation=resample() if augment else cv2.INTER_LINEAR)
+    top, bottom = int(round(h - 0.1)), int(round(h + 0.1))
+    left, right = int(round(w - 0.1)), int(round(w + 0.1))
+    image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_CONSTANT)  # add border
+    return image, (r, r), (w, h)
+
+
+def candidates(box1, box2):
+    # box1(4,n), box2(4,n)
+    w1, h1 = box1[2] - box1[0], box1[3] - box1[1]
+    w2, h2 = box2[2] - box2[0], box2[3] - box2[1]
+    aspect_ratio = numpy.maximum(w2 / (h2 + 1e-16), h2 / (w2 + 1e-16))  # aspect ratio
+    return (w2 > 2) & (h2 > 2) & (w2 * h2 / (w1 * h1 + 1e-16) > 0.1) & (aspect_ratio < 100)
+
+
+def random_perspective(samples, targets, params, border=(0, 0)):
+    h = samples.shape[0] + border[0] * 2
+    w = samples.shape[1] + border[1] * 2
+
+    # Center
+    center = numpy.eye(3)
+    center[0, 2] = -samples.shape[1] / 2  # x translation (pixels)
+    center[1, 2] = -samples.shape[0] / 2  # y translation (pixels)
+
+    # Perspective
+    perspective = numpy.eye(3)
+
+    # Rotation and Scale
+    rotate = numpy.eye(3)
+    a = random.uniform(-params['degrees'], params['degrees'])
+    s = random.uniform(1 - params['scale'], 1 + params['scale'])
+    rotate[:2] = cv2.getRotationMatrix2D(angle=a, center=(0, 0), scale=s)
+
+    # Shear
+    shear = numpy.eye(3)
+    shear[0, 1] = math.tan(random.uniform(-params['shear'], params['shear']) * math.pi / 180)
+    shear[1, 0] = math.tan(random.uniform(-params['shear'], params['shear']) * math.pi / 180)
+
+    # Translation
+    translate = numpy.eye(3)
+    translate[0, 2] = random.uniform(0.5 - params['translate'], 0.5 + params['translate']) * w
+    translate[1, 2] = random.uniform(0.5 - params['translate'], 0.5 + params['translate']) * h
+
+    # Combined rotation matrix, order of operations (right to left) is IMPORTANT
+    matrix = translate @ shear @ rotate @ perspective @ center
+    if (border[0] != 0) or (border[1] != 0) or (matrix != numpy.eye(3)).any():  # image changed
+        samples = cv2.warpAffine(samples, matrix[:2], dsize=(w, h), borderValue=(0, 0, 0))
+
+    # Transform label coordinates
+    n = len(targets)
+    if n:
+        xy = numpy.ones((n * 4, 3))
+        xy[:, :2] = targets[:, [1, 2, 3, 4, 1, 4, 3, 2]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1
+        xy = xy @ matrix.T  # transform
+        xy = xy[:, :2].reshape(n, 8)  # perspective rescale or affine
+
+        # create new boxes
+        x = xy[:, [0, 2, 4, 6]]
+        y = xy[:, [1, 3, 5, 7]]
+        new = numpy.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T
+
+        # clip
+        new[:, [0, 2]] = new[:, [0, 2]].clip(0, w)
+        new[:, [1, 3]] = new[:, [1, 3]].clip(0, h)
+
+        # filter candidates
+        indices = candidates(box1=targets[:, 1:5].T * s, box2=new.T)
+        targets = targets[indices]
+        targets[:, 1:5] = new[indices]
+
+    return samples, targets
+
+
+def mix_up(image1, label1, image2, label2):
+    # Applies MixUp augmentation https://arxiv.org/pdf/1710.09412.pdf
+    alpha = numpy.random.beta(32.0, 32.0)  # mix-up ratio, alpha=beta=32.0
+    image = (image1 * alpha + image2 * (1 - alpha)).astype(numpy.uint8)
+    label = numpy.concatenate((label1, label2), 0)
+    return image, label
+
+
+class Albumentations:
+    def __init__(self):
+        self.transform = None
+        try:
+            import albumentations as album
+
+            transforms = [album.Blur(p=0.01),
+                          album.CLAHE(p=0.01),
+                          album.ToGray(p=0.01),
+                          album.MedianBlur(p=0.01)]
+            self.transform = album.Compose(transforms,
+                                           album.BboxParams('yolo', ['class_labels']))
+
+        except ImportError:  # package not installed, skip
+            pass
+
+    def __call__(self, image, label):
+        if self.transform:
+            x = self.transform(image=image,
+                               bboxes=label[:, 1:],
+                               class_labels=label[:, 0])
+            image = x['image']
+            label = numpy.array([[c, *b] for c, b in zip(x['class_labels'], x['bboxes'])])
+        return image, label
