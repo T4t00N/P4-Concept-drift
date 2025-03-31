@@ -8,18 +8,7 @@ from torchvision.models import resnet50, ResNet50_Weights
 from tqdm import tqdm
 import torch.nn as nn
 import torch.nn.functional as F
-import wandb  # Import wandb
-
-
-def main():
-    # Initialize WandB for the SimCLR project
-    wandb.init(project="SimCLR", config={
-        "learning_rate": 0.002,
-        "epochs": 100,
-        "batch_size": 300,
-        "optimizer": "Adam",
-        "model": "ResNet50 with SimCLR",
-    })
+import wandb
 
 
 # Define the NT-Xent loss for SimCLR
@@ -29,14 +18,14 @@ def nt_xent_loss(z, tau=0.5):
     z: Projections from the model (shape: [2*B, projection_dim])
     tau: Temperature parameter
     """
-    B = z.size(0) // 2  # Batch size before concatenation
-    z = F.normalize(z, p=2, dim=1)  # L2-normalize the projections
-    S = torch.matmul(z, z.T) / tau  # Similarity matrix
-    labels = torch.cat([torch.arange(B, 2 * B), torch.arange(0, B)]).to(z.device)  # Positive pair indices
-    mask = torch.eye(2 * B, dtype=torch.bool).to(z.device)  # Mask to exclude self-similarity
-    S_masked = S.masked_fill(mask, -1e9)  # Set diagonal to a large negative value
-    denom = torch.logsumexp(S_masked, dim=1)  # Log-sum-exp over all negatives
-    pos_sim = S[torch.arange(2 * B), labels]  # Similarity with positive pairs
+    B = z.size(0) // 2
+    z = F.normalize(z, p=2, dim=1)
+    S = torch.matmul(z, z.T) / tau
+    labels = torch.cat([torch.arange(B, 2 * B), torch.arange(0, B)]).to(z.device)
+    mask = torch.eye(2 * B, dtype=torch.bool).to(z.device)
+    S_masked = S.masked_fill(mask, -1e9)
+    denom = torch.logsumexp(S_masked, dim=1)
+    pos_sim = S[torch.arange(2 * B), labels]
     loss = -pos_sim + denom
     return loss.mean()
 
@@ -52,15 +41,23 @@ class SimCLRModel(nn.Module):
         )
 
     def forward(self, x):
-        h = self.encoder(x)  # Feature representation (2048-dim)
-        z = self.projection_head(h)  # Projection for contrastive loss (128-dim)
+        h = self.encoder(x)
+        z = self.projection_head(h)
         return h, z
 
 
-# Dataset for SimCLR training
+# Updated Dataset for SimCLR training
 class SimCLRDataset(torch.utils.data.Dataset):
-    def __init__(self, image_paths, transform):
-        self.image_paths = image_paths
+    def __init__(self, image_paths, transform, step=1):
+        """
+        Initialize the dataset, selecting every 'step'-th image from image_paths.
+
+        Args:
+            image_paths (list): List of paths to image files.
+            transform: Transformations to apply to each image.
+            step (int): Interval for selecting images (default=1, meaning all images).
+        """
+        self.image_paths = image_paths[::step]  # Select every 'step'-th image
         self.transform = transform
 
     def __len__(self):
@@ -74,10 +71,20 @@ class SimCLRDataset(torch.utils.data.Dataset):
         return view1, view2
 
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    image_dir = "/ceph/project/P4-concept-drift/YOLOv8-Anton/data/cropped_images/val"
+def main():
+    # Initialize WandB for the SimCLR project
+    wandb.init(project="SimCLR", config={
+        "learning_rate": 0.002,
+        "epochs": 100,
+        "batch_size": 300,
+        "optimizer": "Adam",
+        "model": "ResNet50 with SimCLR",
+    })
 
-    # Define SimCLR augmentations (no flipping or rotation for static images)
+    image_dir = "/ceph/project/P4-concept-drift/YOLOv8-Anton/data/cropped_images/train"
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    # Define SimCLR augmentations
     simclr_transform = T.Compose([
         T.RandomResizedCrop(224, scale=(0.2, 1.0)),
         T.RandomApply([T.ColorJitter(brightness=0.4, contrast=0.4, saturation=0, hue=0)], p=0.8),
@@ -92,9 +99,13 @@ class SimCLRDataset(torch.utils.data.Dataset):
     if not image_paths:
         raise FileNotFoundError(f"No image files found in {image_dir}")
 
-    simclr_dataset = SimCLRDataset(image_paths, simclr_transform)
+    # Create dataset with step=10 to select every 10th image
+    simclr_dataset = SimCLRDataset(image_paths, simclr_transform, step=10)
     simclr_loader = torch.utils.data.DataLoader(simclr_dataset, batch_size=wandb.config.batch_size,
                                                 shuffle=True, num_workers=20)
+
+    # Log and print the number of selected images
+    print(f"Selected {len(simclr_dataset)} images for training.")
 
     base_model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
     base_model.fc = nn.Identity()
