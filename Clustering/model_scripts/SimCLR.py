@@ -11,6 +11,17 @@ import torch.nn.functional as F
 import wandb  # Import wandb
 
 
+def main():
+    # Initialize WandB for the SimCLR project
+    wandb.init(project="SimCLR", config={
+        "learning_rate": 0.002,
+        "epochs": 100,
+        "batch_size": 300,
+        "optimizer": "Adam",
+        "model": "ResNet50 with SimCLR",
+    })
+
+
 # Define the NT-Xent loss for SimCLR
 def nt_xent_loss(z, tau=0.5):
     """
@@ -63,18 +74,8 @@ class SimCLRDataset(torch.utils.data.Dataset):
         return view1, view2
 
 
-def main():
-    # Initialize WandB for the SimCLR project
-    wandb.init(project="SimCLR", config={
-        "learning_rate": 0.002,
-        "epochs": 100,
-        "batch_size": 300,
-        "optimizer": "Adam",
-        "model": "ResNet50 with SimCLR",
-    })
-
-    image_dir = "/ceph/project/P4-concept-drift/YOLOv8-Anton/data/cropped_images/val"  # Updated to 'val'
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    image_dir = "/ceph/project/P4-concept-drift/YOLOv8-Anton/data/cropped_images/val"
 
     # Define SimCLR augmentations (no flipping or rotation for static images)
     simclr_transform = T.Compose([
