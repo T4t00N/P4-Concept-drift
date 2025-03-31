@@ -12,12 +12,7 @@ import wandb
 
 
 # Define the NT-Xent loss for SimCLR
-def nt_xent_loss(z, tau=0.5):
-    """
-    Compute the NT-Xent (Normalized Temperature-scaled Cross Entropy) loss.
-    z: Projections from the model (shape: [2*B, projection_dim])
-    tau: Temperature parameter
-    """
+def nt_xent_loss(z, tau=0.2):
     B = z.size(0) // 2
     z = F.normalize(z, p=2, dim=1)
     S = torch.matmul(z, z.T) / tau
@@ -74,9 +69,9 @@ class SimCLRDataset(torch.utils.data.Dataset):
 def main():
     # Initialize WandB for the SimCLR project
     wandb.init(project="SimCLR", config={
-        "learning_rate": 0.002,
+        "learning_rate": 0.01,
         "epochs": 100,
-        "batch_size": 300,
+        "batch_size": 512,
         "optimizer": "Adam",
         "model": "ResNet50 with SimCLR",
     })
