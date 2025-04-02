@@ -60,9 +60,9 @@ class SimCLRDataset(torch.utils.data.Dataset):
 def main():
     # Initialize WandB for MoCo (updated config)
     wandb.init(project="MoCo", config={
-        "learning_rate": 0.03,          # Updated to match MoCo v1
+        "learning_rate": 0.02,          # Updated to match MoCo v1
         "epochs": 100,
-        "batch_size": 512,
+        "batch_size": 128,
         "optimizer": "SGD",             # Updated to SGD
         "model": "ResNet50 with MoCo",
         "queue_size": 65536,
@@ -76,9 +76,9 @@ def main():
     # Augmentations (updated to match MoCo v1)
     simclr_transform = T.Compose([
         T.RandomResizedCrop(224, scale=(0.2, 1.0)),
-        T.RandomHorizontalFlip(p=0.5),                          # Added
-        T.RandomApply([T.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),  # Adjusted hue to 0.1
-        T.RandomGrayscale(p=0.2),                              # Added
+        #T.RandomHorizontalFlip(p=0.5),                          # Added
+        T.RandomApply([T.ColorJitter(brightness=0.4, contrast=0.4, saturation=0, hue=0)], p=0.8),  # Adjusted hue to 0.1
+        #T.RandomGrayscale(p=0.2),                              # Added
         T.ToTensor(),
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
