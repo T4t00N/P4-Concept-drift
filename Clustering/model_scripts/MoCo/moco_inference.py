@@ -132,7 +132,7 @@ def visualize_clusters(features, cluster_labels, image_paths):
 # Main function
 def main():
     # Parameters to adjust
-    checkpoint_path = "moco_checkpoints/moco_epoch_30.pt"  # Path to MoCo checkpoint
+    checkpoint_path = "moco_checkpoints/moco_epoch_15.pt"  # Path to MoCo checkpoint
     image_dir = "/ceph/project/P4-concept-drift/YOLOv8-Anton/data/cropped_images/test"  # Directory containing images
     num_clusters = 50  # Number of clusters for K-Means
     batch_size = 200  # Batch size for feature extraction
