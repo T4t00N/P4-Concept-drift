@@ -10,8 +10,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import wandb
 
-# MoCo loss function
-def moco_loss(q, k, queue, tau=0.2):
+# MoCo loss function (unchanged)
+def moco_loss(q, k, queue, tau=0.07):  # Updated tau to 0.07
     B = q.size(0)
     pos_logits = (q * k).sum(dim=1) / tau  # [B]
     neg_logits = torch.matmul(q, queue.T) / tau  # [B, K]
@@ -20,7 +20,7 @@ def moco_loss(q, k, queue, tau=0.2):
     loss = F.cross_entropy(logits, labels)
     return loss
 
-# Update key encoder with momentum
+# Update key encoder with momentum (unchanged)
 def update_key_model(query_model, key_model, m=0.999):
     if isinstance(query_model, nn.DataParallel):
         query_model = query_model.module
@@ -29,23 +29,19 @@ def update_key_model(query_model, key_model, m=0.999):
     for param_q, param_k in zip(query_model.parameters(), key_model.parameters()):
         param_k.data = m * param_k.data + (1 - m) * param_q.data
 
-# Model definition (same as SimCLR)
-class SimCLRModel(nn.Module):
+# Model definition (modified projection head)
+class SimCLRModel(nn.Module):  # Name retained for compatibility, but now MoCo v1-style
     def __init__(self, base_model, projection_dim=128):
         super(SimCLRModel, self).__init__()
         self.encoder = base_model
-        self.projection_head = nn.Sequential(
-            nn.Linear(2048, 512),
-            nn.ReLU(),
-            nn.Linear(512, projection_dim)
-        )
+        self.projection_head = nn.Linear(2048, projection_dim)  # Single linear layer
 
     def forward(self, x):
         h = self.encoder(x)
         z = self.projection_head(h)
         return h, z
 
-# Dataset (same as SimCLR)
+# Dataset (unchanged)
 class SimCLRDataset(torch.utils.data.Dataset):
     def __init__(self, image_paths, transform, step=1):
         self.image_paths = image_paths[::step]
@@ -62,70 +58,74 @@ class SimCLRDataset(torch.utils.data.Dataset):
         return view1, view2
 
 def main():
-    # Initialize WandB for MoCo
+    # Initialize WandB for MoCo (updated config)
     wandb.init(project="MoCo", config={
-        "learning_rate": 0.01,
+        "learning_rate": 0.03,          # Updated to match MoCo v1
         "epochs": 100,
         "batch_size": 512,
-        "optimizer": "Adam",
+        "optimizer": "SGD",             # Updated to SGD
         "model": "ResNet50 with MoCo",
         "queue_size": 65536,
         "momentum": 0.999,
-        "tau": 0.2,
+        "tau": 0.07,                    # Updated to 0.07
     })
 
     image_dir = "/ceph/project/P4-concept-drift/YOLOv8-Anton/data/cropped_images/train"
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    # Augmentations (same as SimCLR)
+    # Augmentations (updated to match MoCo v1)
     simclr_transform = T.Compose([
         T.RandomResizedCrop(224, scale=(0.2, 1.0)),
-        T.RandomApply([T.ColorJitter(brightness=0.4, contrast=0.4, saturation=0, hue=0)], p=0.8),
-        T.RandomApply([T.GaussianBlur(kernel_size=23)], p=0.5),
+        T.RandomHorizontalFlip(p=0.5),                          # Added
+        T.RandomApply([T.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),  # Adjusted hue to 0.1
+        T.RandomGrayscale(p=0.2),                              # Added
         T.ToTensor(),
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    # Load image paths
+    # Load image paths (unchanged)
     image_paths = sorted(glob.glob(os.path.join(image_dir, "*.jpg")) +
                          glob.glob(os.path.join(image_dir, "*.jpeg")) +
                          glob.glob(os.path.join(image_dir, "*.png")))
     if not image_paths:
         raise FileNotFoundError(f"No image files found in {image_dir}")
 
-    # Create dataset and loader
+    # Create dataset and loader (unchanged)
     simclr_dataset = SimCLRDataset(image_paths, simclr_transform, step=10)
     simclr_loader = torch.utils.data.DataLoader(simclr_dataset, batch_size=wandb.config.batch_size,
                                                 shuffle=True, num_workers=20)
     print(f"Selected {len(simclr_dataset)} images for training.")
 
-    # Initialize models
+    # Initialize models (unchanged except projection head)
     base_model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
     base_model.fc = nn.Identity()
     query_model = SimCLRModel(base_model).to(device)
     key_model = SimCLRModel(base_model).to(device)
     key_model.load_state_dict(query_model.state_dict())  # Copy weights to key_model
 
-    # Handle multi-GPU
+    # Handle multi-GPU (unchanged)
     if device == 'cuda' and torch.cuda.device_count() > 1:
         query_model = nn.DataParallel(query_model)
         key_model = nn.DataParallel(key_model)
 
-    # Set key_model to eval mode (no gradient updates)
+    # Set key_model to eval mode (unchanged)
     key_model.eval()
 
-    # Optimizer for query_model only
-    optimizer = torch.optim.Adam(query_model.parameters(), lr=wandb.config.learning_rate)
+    # Optimizer for query_model only (changed to SGD)
+    optimizer = torch.optim.SGD(query_model.parameters(),
+                                lr=wandb.config.learning_rate,
+                                momentum=0.9,
+                                weight_decay=1e-4)
 
-    # Initialize queue
+    # Initialize queue (unchanged)
     K = 65536  # Queue size
     projection_dim = 128
     queue = torch.randn(K, projection_dim).to(device)
     queue = F.normalize(queue, dim=1)
 
-    # Training loop
+    # Training loop (updated tau)
     num_epochs = wandb.config.epochs
-    tau = 0.2
+    tau = wandb.config.tau  # Uses 0.07 from config
     print("Starting MoCo training")
     for epoch in range(num_epochs):
         query_model.train()
@@ -147,10 +147,10 @@ def main():
             loss.backward()
             optimizer.step()
 
-            # Update key_model
+            # Update key_model (unchanged)
             update_key_model(query_model, key_model, m=0.999)
 
-            # Update queue (enqueue and dequeue)
+            # Update queue (unchanged)
             queue = torch.cat([queue, k.detach()], dim=0)
             if queue.size(0) > K:
                 queue = queue[-K:, :]  # Keep last K elements
@@ -161,7 +161,7 @@ def main():
         print(f"Epoch {epoch + 1}, Average Loss: {avg_loss:.4f}")
         wandb.log({"epoch": epoch + 1, "loss": avg_loss})
 
-        # Save checkpoint every 5 epochs
+        # Save checkpoint every 5 epochs (unchanged)
         if (epoch + 1) % 5 == 0:
             checkpoint = {
                 'epoch': epoch + 1,
@@ -170,7 +170,7 @@ def main():
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': avg_loss,
             }
-            checkpoint_path = f"moco_epoch_{epoch + 1}.pt"
+            checkpoint_path = f"moco_checkpoints/moco_epoch_{epoch + 1}.pt"
             torch.save(checkpoint, checkpoint_path)
             print(f"Checkpoint saved at {checkpoint_path}.")
 
