@@ -91,7 +91,7 @@ def main():
         raise FileNotFoundError(f"No image files found in {image_dir}")
 
     # Create dataset and loader (unchanged)
-    simclr_dataset = SimCLRDataset(image_paths, simclr_transform, step=10)
+    simclr_dataset = SimCLRDataset(image_paths, simclr_transform, step=1)
     simclr_loader = torch.utils.data.DataLoader(simclr_dataset, batch_size=wandb.config.batch_size,
                                                 shuffle=True, num_workers=20)
     print(f"Selected {len(simclr_dataset)} images for training.")
