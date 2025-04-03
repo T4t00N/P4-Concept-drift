@@ -34,7 +34,11 @@ class SimCLRModel(nn.Module):  # Name retained for compatibility, but now MoCo v
     def __init__(self, base_model, projection_dim=128):
         super(SimCLRModel, self).__init__()
         self.encoder = base_model
-        self.projection_head = nn.Linear(2048, projection_dim)  # Single linear layer
+        self.projection_head = nn.Sequential(
+            nn.Linear(2048, 512),  # First layer (arbitrary hidden size, e.g., 512)
+            nn.ReLU(),
+            nn.Linear(512, 128)  # Second layer to projection_dim
+        ) # Single linear layer
 
     def forward(self, x):
         h = self.encoder(x)
@@ -60,9 +64,9 @@ class SimCLRDataset(torch.utils.data.Dataset):
 def main():
     # Initialize WandB for MoCo (updated config)
     wandb.init(project="MoCo", config={
-        "learning_rate": 0.02,          # Updated to match MoCo v1
+        "learning_rate": 0.001,          # Updated to match MoCo v1
         "epochs": 100,
-        "batch_size": 128,
+        "batch_size": 256,
         "optimizer": "SGD",             # Updated to SGD
         "model": "ResNet50 with MoCo",
         "queue_size": 65536,
@@ -76,9 +80,7 @@ def main():
     # Augmentations (updated to match MoCo v1)
     simclr_transform = T.Compose([
         T.RandomResizedCrop(224, scale=(0.2, 1.0)),
-        #T.RandomHorizontalFlip(p=0.5),                          # Added
-        T.RandomApply([T.ColorJitter(brightness=0.4, contrast=0.4, saturation=0, hue=0)], p=0.8),  # Adjusted hue to 0.1
-        #T.RandomGrayscale(p=0.2),                              # Added
+        T.RandomApply([T.GaussianBlur(kernel_size=23, sigma=(0.1, 2.0))], p=0.5), # Simulate sensor blur
         T.ToTensor(),
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
@@ -91,9 +93,9 @@ def main():
         raise FileNotFoundError(f"No image files found in {image_dir}")
 
     # Create dataset and loader (unchanged)
-    simclr_dataset = SimCLRDataset(image_paths, simclr_transform, step=1)
+    simclr_dataset = SimCLRDataset(image_paths, simclr_transform, step=5)
     simclr_loader = torch.utils.data.DataLoader(simclr_dataset, batch_size=wandb.config.batch_size,
-                                                shuffle=True, num_workers=20)
+                                                shuffle=True, num_workers=16)
     print(f"Selected {len(simclr_dataset)} images for training.")
 
     # Initialize models (unchanged except projection head)
