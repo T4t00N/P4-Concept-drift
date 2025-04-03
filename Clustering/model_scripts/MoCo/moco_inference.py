@@ -20,7 +20,11 @@ class MoCoModel(nn.Module):
     def __init__(self, base_model, projection_dim=128):
         super(MoCoModel, self).__init__()
         self.encoder = base_model  # ResNet-50 without the final layer
-        self.projection_head = nn.Linear(2048, projection_dim)  # Single linear layer as in MoCo
+        self.projection_head = nn.Sequential(
+            nn.Linear(2048, 512),  # First layer (arbitrary hidden size, e.g., 512)
+            nn.ReLU(),
+            nn.Linear(512, 128)  # Second layer to projection_dim
+        ) # Single linear layer
 
     def forward(self, x):
         h = self.encoder(x)  # Feature representation (2048-dim)
@@ -32,7 +36,6 @@ class MoCoModel(nn.Module):
 def extract_features(encoder, image_dir, batch_size=16, device='cuda', num_workers=4):
     encoder.eval()
     transform = T.Compose([
-        T.Resize(256),
         T.CenterCrop(224),
         T.ToTensor(),
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -132,10 +135,10 @@ def visualize_clusters(features, cluster_labels, image_paths):
 # Main function
 def main():
     # Parameters to adjust
-    checkpoint_path = "moco_checkpoints/moco_epoch_15.pt"  # Path to MoCo checkpoint
+    checkpoint_path = "moco_checkpoints/moco_epoch_5.pt"  # Path to MoCo checkpoint
     image_dir = "/ceph/project/P4-concept-drift/YOLOv8-Anton/data/cropped_images/test"  # Directory containing images
-    num_clusters = 50  # Number of clusters for K-Means
-    batch_size = 200  # Batch size for feature extraction
+    num_clusters = 25  # Number of clusters for K-Means
+    batch_size = 128  # Batch size for feature extraction
     num_workers = 4  # Number of workers for data loading
     output_csv = "moco_clusters.csv"  # Output CSV file
     output_html = "moco_interactive_PCA_plot.html"  # Output HTML visualization
