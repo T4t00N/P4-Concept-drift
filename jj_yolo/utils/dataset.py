@@ -51,8 +51,8 @@ class Dataset(data.Dataset):
         if nl:
             target[:, 1:] = torch.from_numpy(label)
 
-        # Convert HWC to CHW, BGR to RGB
-        sample = image.transpose((2, 0, 1))[::-1]
+        # Add channel dimension for grayscale
+        sample = image[numpy.newaxis, :, :]
         sample = numpy.ascontiguousarray(sample)
 
         return torch.from_numpy(sample), target, shapes
@@ -61,7 +61,7 @@ class Dataset(data.Dataset):
         return len(self.filenames)
 
     def load_image(self, i):
-        image = cv2.imread(self.filenames[i])
+        image = cv2.imread(self.filenames[i], cv2.IMREAD_GRAYSCALE)
         h, w = image.shape[:2]
         r = self.input_size / max(h, w)
         if r != 1:
