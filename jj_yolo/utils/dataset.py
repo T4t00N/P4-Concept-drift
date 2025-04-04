@@ -63,14 +63,6 @@ class Dataset(data.Dataset):
     def load_image(self, i):
         image = cv2.imread(self.filenames[i], cv2.IMREAD_GRAYSCALE)
         h, w = image.shape[:2]
-        r = self.input_size / max(h, w)
-        if r != 1:
-            # Fixed interpolation for static resizing
-            image = cv2.resize(
-                image,
-                dsize=(int(w * r), int(h * r)),
-                interpolation=cv2.INTER_LINEAR
-            )
         return image, (h, w)
 
     @staticmethod
