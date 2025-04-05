@@ -53,7 +53,7 @@ def train(args, params):
     # Load training filenames
     filenames = []
     path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset"
-    with open(f'{path}/test.txt') as reader:
+    with open(f'{path}/train.txt') as reader:
         for filepath in reader.readlines():
             filenames.append(filepath.strip())
 
@@ -207,7 +207,7 @@ def test(args, params, model=None):
     # Create Dataset (again, augment=False, no mosaic)
     dataset = Dataset(filenames, args.input_size, params, augment=False)
     loader = data.DataLoader(dataset, 8, shuffle=False,
-                             num_workers=8, pin_memory=True,
+                             num_workers=32, pin_memory=True,
                              collate_fn=Dataset.collate_fn)
 
     if model is None:
