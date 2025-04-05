@@ -48,12 +48,12 @@ def train(args, params):
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr, last_epoch=-1)
 
     # EMA
-    ema = util.EMA(model) if args.local_rank == os.environ.get('LOCAL_RANK') else None
+    ema = util.EMA(model) if args.local_rank == 0 else None
 
     # Load training filenames
     filenames = []
     path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset"
-    with open(f'{path}/train.txt') as reader:
+    with open(f'{path}/test.txt') as reader:
         for filepath in reader.readlines():
             filenames.append(filepath.strip())
 
