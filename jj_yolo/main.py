@@ -52,7 +52,7 @@ def train(args, params):
 
     # Load training filenames
     filenames = []
-    path = r"/ceph/project/P4-concept-drift/YOLOv8-Anton/data"
+    path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset"
     with open(f'{path}/train.txt') as reader:
         for filepath in reader.readlines():
             filenames.append(filepath.strip())
@@ -199,7 +199,7 @@ def train(args, params):
 @torch.no_grad()
 def test(args, params, model=None):
     filenames = []
-    path = r"/ceph/project/P4-concept-drift/YOLOv8-Anton/data"
+    path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset"
     with open(f'{path}/val.txt') as reader:
         for filepath in reader.readlines():
             filenames.append(filepath.strip())
