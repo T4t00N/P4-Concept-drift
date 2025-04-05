@@ -290,11 +290,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input-size', default=384, type=int)
     parser.add_argument('--batch-size', default=128, type=int)
-    parser.add_argument('--local_rank', default=0, type=int)
+    # Remove: parser.add_argument('--local_rank', default=0, type=int)
     parser.add_argument('--epochs', default=5, type=int)
     parser.add_argument('--train', action='store_true')
     parser.add_argument('--test', action='store_true')
-    args = parser.parse_args()
+
+    # Use parse_known_args to ignore unrecognized arguments
+    args, _ = parser.parse_known_args()
+
+    # Set local_rank from environment variable
     args.local_rank = int(os.environ.get('LOCAL_RANK', 0))
     args.world_size = int(os.getenv('WORLD_SIZE', 1))
     print(f"Args parsed: {args}")
@@ -321,7 +325,6 @@ def main():
         train(args, params)
     if args.test:
         test(args, params)
-
 
 if __name__ == "__main__":
     main()
