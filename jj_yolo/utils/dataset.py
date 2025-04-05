@@ -74,23 +74,34 @@ class Dataset(data.Dataset):
 
     @staticmethod
     def load_label(filenames, person_only=False):
-        cache_dir = os.path.join("/ceph/project/P4-concept-drift/Dataset", "cache")
-        print(cache_dir)
+        # Setup cache directory
+        cache_dir = "/ceph/project/P4-concept-drift/Dataset/cache"
+        print("Cache directory:", cache_dir)
         os.makedirs(cache_dir, exist_ok=True)
+
+        # Build base name from the parent folder of the first filename
         base_name = os.path.basename(os.path.dirname(filenames[0]))
         print("base_name:", base_name)
-        path = os.path.join(cache_dir, f"{base_name}_label_cache.pt")
-        person_cache_path = os.path.join(cache_dir, f"{base_name}_person_label_cache.pt")
 
-        print(f"Cache path: {path}")
-        print(f"Person cache path: {person_cache_path}")
-        if os.path.exists(path):
-            print(f"Loading label from {path}")
-            return torch.load(path)
+        # Build the path for the label cache
+        label_cache_filename = f"{base_name}_label_cache.pt"
+        label_cache_path = os.path.join(cache_dir, label_cache_filename)
+        print("Cache path:", label_cache_path)
+
+        # Build the path for the person-only label cache
+        person_cache_filename = f"{base_name}_person_label_cache.pt"
+        person_cache_path = os.path.join(cache_dir, person_cache_filename)
+        print("Person cache path:", person_cache_path)
+
+        # If the label cache already exists, load it
+        if os.path.exists(label_cache_path):
+            print(f"Loading label from {label_cache_path}")
+            return torch.load(label_cache_path)
         else:
-            print(f"Creating label from {path}")
+            print(f"Creating label from {label_cache_path}")
 
-        x = {}
+        # Build up the label dictionary
+        label_dict = {}
         for filename in tqdm(filenames, desc="Processing labels"):
             try:
                 with open(filename, 'rb') as f:
@@ -98,35 +109,46 @@ class Dataset(data.Dataset):
                     image.verify()
 
                 shape = image.size
-                assert (shape[0] > 9) & (shape[1] > 9), f'image size {shape} <10 pixels'
-                assert image.format.lower() in FORMATS, f'invalid image format {image.format}'
+                assert (shape[0] > 9) & (shape[1] > 9), f"Image size {shape} <10 pixels"
+                assert image.format.lower() in FORMATS, f"Invalid image format {image.format}"
 
-                a = f'{os.sep}images{os.sep}'
-                b = f'{os.sep}labels{os.sep}'
-                label_path = b.join(filename.rsplit(a, 1)).rsplit('.', 1)[0] + '.txt'
+                # Construct label path from the image path
+                image_folder = f"{os.sep}images{os.sep}"
+                label_folder = f"{os.sep}labels{os.sep}"
+                split_part = filename.rsplit(image_folder, 1)
+                swapped_folder_path = label_folder.join(split_part)
+                base_label_path = swapped_folder_path.rsplit('.', 1)[0]
+                label_path = f"{base_label_path}.txt"
+
                 if os.path.isfile(label_path):
                     with open(label_path) as f:
-                        label = [x.split() for x in f.read().strip().splitlines() if len(x)]
+                        raw_lines = f.read().strip().splitlines()
+                        label = [line.split() for line in raw_lines if len(line)]
                         label = numpy.array(label, dtype=numpy.float32)
+
                     nl = len(label)
                     if nl:
-                        assert label.shape[1] == 5, 'labels require 5 columns'
-                        assert (label >= 0).all(), 'negative label values'
-                        assert (label[:, 1:] <= 1).all(), 'non-normalized coordinates'
-                        _, i_ = numpy.unique(label, axis=0, return_index=True)
-                        if len(i_) < nl:
-                            label = label[i_]
+                        assert label.shape[1] == 5, "Labels require 5 columns"
+                        assert (label >= 0).all(), "Negative label values"
+                        assert (label[:, 1:] <= 1).all(), "Non-normalized coordinates"
+                        # Remove any duplicate rows
+                        _, unique_idx = numpy.unique(label, axis=0, return_index=True)
+                        if len(unique_idx) < nl:
+                            label = label[unique_idx]
                     else:
                         label = numpy.zeros((0, 5), dtype=numpy.float32)
                 else:
                     label = numpy.zeros((0, 5), dtype=numpy.float32)
+
                 if filename:
-                    x[filename] = [label, shape]
+                    label_dict[filename] = [label, shape]
+
             except FileNotFoundError:
                 pass
 
-        torch.save(x, path)
-        return x
+        # Save to cache file
+        torch.save(label_dict, label_cache_path)
+        return label_dict
 
 
 def wh2xy(x, w=640, h=640, pad_w=0, pad_h=0):
