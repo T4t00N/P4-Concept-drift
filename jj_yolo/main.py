@@ -53,7 +53,7 @@ def train(args, params):
     # Load training filenames
     filenames = []
     path = r"/ceph/project/P4-concept-drift/YOLOv8-Anton/data"
-    with open(f'{path}/cropped_txt/cropped_train.txt') as reader:
+    with open(f'{path}/train.txt') as reader:
         for filepath in reader.readlines():
             filenames.append(filepath.strip())
 
@@ -200,7 +200,7 @@ def train(args, params):
 def test(args, params, model=None):
     filenames = []
     path = r"/ceph/project/P4-concept-drift/YOLOv8-Anton/data"
-    with open(f'{path}/cropped_txt/cropped_val.txt') as reader:
+    with open(f'{path}/val.txt') as reader:
         for filepath in reader.readlines():
             filenames.append(filepath.strip())
 

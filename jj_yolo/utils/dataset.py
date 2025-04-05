@@ -75,7 +75,7 @@ class Dataset(data.Dataset):
     @staticmethod
     def load_label(filenames, person_only=False):
         # Setup cache directory
-        cache_dir = "/ceph/project/P4-concept-drift/Dataset/cache"
+        cache_dir = "/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset/cache"
         print("Cache directory:", cache_dir)
         os.makedirs(cache_dir, exist_ok=True)
 
