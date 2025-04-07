@@ -1,5 +1,5 @@
 ### **TO-DO**
 
 
-- check at util.py virker 
-- check at .dataset "**load_label**" virker, eventuelt omksriv or at det er nemmere at regne ud og ændre.
+- Tilføj til main.py som kun kører precision / recall / map score hver 5 epoch
+- Tilføj Wandb
