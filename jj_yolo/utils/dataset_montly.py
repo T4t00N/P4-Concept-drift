@@ -76,23 +76,20 @@ class Dataset(data.Dataset):
 
     @staticmethod
     def filter_by_month(filenames, month):
-        """Filter filenames by month (format: MM)"""
+        """Filter filenames by month (format: MM) using the full path"""
         month_pattern = re.compile(r'2021' + month)
-        filtered_files = [f for f in filenames if month_pattern.search(os.path.basename(f))]
+        filtered_files = [f for f in filenames if month_pattern.search(f)]
         return filtered_files
 
     @staticmethod
     def count_images_by_month(filenames):
-        """Count images by month"""
+        """Count images by month using the full path"""
         month_counts = {}
-        for file in filenames:
-            basename = os.path.basename(file)
-            match = re.search(r'2021(\d{2})', basename)
+        for f in filenames:
+            match = re.search(r'2021(\d{2})', f)
             if match:
                 month = match.group(1)
                 month_counts[month] = month_counts.get(month, 0) + 1
-
-        # Print results
         print("\n--- Image Count by Month ---")
         for month, count in sorted(month_counts.items()):
             print(f"Month {month}: {count} images")
@@ -130,7 +127,9 @@ class Dataset(data.Dataset):
         # If the label cache already exists, load it
         if os.path.exists(label_cache_path):
             print(f"Loading label from {label_cache_path}")
+            print(f"Process Starting to load label cache...")
             full_cache = torch.load(label_cache_path)
+            print(f"ProcessLabel cache loaded successfully.")
             # Filter the cache to include only the filenames in your 'filenames' list
             filtered_cache = {k: v for k, v in full_cache.items() if k in filenames}
             return filtered_cache  # Return only the matching subset

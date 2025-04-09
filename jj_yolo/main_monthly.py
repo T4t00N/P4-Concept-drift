@@ -3,6 +3,8 @@ import copy
 import csv
 import os
 import warnings
+from email.policy import default
+
 import numpy
 import torch
 import tqdm
@@ -58,8 +60,7 @@ def train(args, params):
         for filepath in reader.readlines():
             filenames.append(filepath.strip())
 
-    # Create Dataset (pass augment=False because we removed augmentation logic)
-    dataset = Dataset(filenames, args.input_size, params, augment=False)
+    dataset = Dataset(filenames, args.input_size, params, augment=False, month_filter=args.train_month)
 
     # Sampler for distributed training if needed
     if args.world_size <= 1:
@@ -71,7 +72,7 @@ def train(args, params):
                              batch_size=args.batch_size,
                              shuffle=(sampler is None),
                              sampler=sampler,
-                             num_workers=32,
+                             num_workers=20,
                              pin_memory=True,
                              collate_fn=Dataset.collate_fn)
 
@@ -201,18 +202,18 @@ def train(args, params):
 def test(args, params, model=None):
     filenames = []
     path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset"
-    with open(f'{path}/test.txt') as reader:
+    with open(f'{path}/val.txt') as reader:
         for filepath in reader.readlines():
             filenames.append(filepath.strip())
 
     # Filter for January images if month filter is specified
-    month_filter = "01" if args.month_filter else None
+   #month_filter = "09" if args.month_filter else None
 
     # Create Dataset with month filter if specified
-    dataset = Dataset(filenames, args.input_size, params, augment=False, month_filter=month_filter)
+    dataset = Dataset(filenames, args.input_size, params, augment=False, month_filter=args.test_month)
 
     loader = data.DataLoader(dataset, 8, shuffle=False,
-                             num_workers=32, pin_memory=True,
+                             num_workers=20, pin_memory=True,
                              collate_fn=Dataset.collate_fn)
 
     if model is None:
@@ -295,13 +296,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input-size', default=384, type=int)
     parser.add_argument('--batch-size', default=128, type=int)
-    parser.add_argument('--epochs', default=5, type=int)
+    parser.add_argument('--epochs', default=100, type=int)
     parser.add_argument('--train', action='store_true')
     parser.add_argument('--test', action='store_true')
-    parser.add_argument('--month-filter', action='store_true',
-                        help='Filter test images for January only')
-
-    # Use parse_known_args to ignore unrecognized arguments
+    parser.add_argument('--train-month', type=str, default=None,
+                        help='Filter training images by month (e.g., 01 for January)')
+    parser.add_argument('--test-month', type=str, default=None,
+                        help='Filter testing images by month (e.g., 01 for January)')
     args, _ = parser.parse_known_args()
 
     # Set local_rank from environment variable
@@ -315,7 +316,9 @@ def main():
         torch.cuda.set_device(device=args.local_rank % torch.cuda.device_count())
         print(f"Process {args.local_rank} using GPU {torch.cuda.current_device()} "
               f"out of {torch.cuda.device_count()} GPUs")
+        print(f"Process {args.local_rank}: Initializing process group...")
         torch.distributed.init_process_group(backend='nccl', init_method='env://')
+        print(f"Process {args.local_rank}: Process group initialized.")
 
     if args.local_rank == 0:
         if not os.path.exists('weights'):
