@@ -3,8 +3,6 @@ import copy
 import csv
 import os
 import warnings
-from email.policy import default
-
 import numpy
 import torch
 import tqdm
@@ -15,6 +13,34 @@ from utils import util
 from utils.dataset import Dataset
 
 warnings.filterwarnings("ignore")
+
+def load_filenames_from_csv(csv_path, cluster_id):
+    """Reads a CSV file and returns filenames matching the cluster_id."""
+    filenames = []
+    print(f"Attempting to load filenames from CSV: {csv_path} for cluster: {cluster_id}")
+    try:
+        with open(csv_path, 'r', newline='') as csvfile:
+            # Assuming CSV format: /path/to/image.jpg,CLUSTER_ID
+            # Handle potential extra paths in the first column as shown in the example
+            reader = csv.reader(csvfile)
+            for row in reader:
+                if row: # Ensure row is not empty
+                    # The user example had paths concatenated before the comma
+                    # Let's assume the *last* comma separates the path and the cluster ID
+                    parts = ','.join(row).rsplit(',', 1)
+                    if len(parts) == 2:
+                        filepath = parts[0].strip()
+                        cluster = parts[1].strip()
+                        if cluster == cluster_id:
+                            filenames.append(filepath)
+                    # else: # Optional: Warn about malformed rows
+                    #     print(f"Skipping malformed row: {row}")
+        print(f"Loaded {len(filenames)} filenames for cluster {cluster_id} from {csv_path}")
+    except FileNotFoundError:
+        print(f"Error: CSV file not found at {csv_path}")
+    except Exception as e:
+        print(f"Error reading CSV file {csv_path}: {e}")
+    return filenames
 
 
 def learning_rate(args, params):
@@ -55,12 +81,43 @@ def train(args, params):
 
     # Load training filenames
     filenames = []
-    path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset"
-    with open(f'{path}/train.txt') as reader:
-        for filepath in reader.readlines():
-            filenames.append(filepath.strip())
+    if args.cluster_csv and args.cluster_id:
+        # Load from CSV based on cluster ID
+        filenames = load_filenames_from_csv(args.cluster_csv, args.cluster_id)
+        if not filenames:
+            print(f"Warning: No filenames loaded for cluster {args.cluster_id} from {args.cluster_csv}. Exiting.")
+            return # Or handle as appropriate
+        # Decide if month_filter should still apply when using CSV
+        # Option 1: CSV overrides month filter
+        effective_month_filter = None
+        # Option 2: Apply month filter *after* CSV loading (if desired)
+        # effective_month_filter = args.train_month
+        # if effective_month_filter:
+        #     filenames = Dataset.filter_by_month(filenames, effective_month_filter) # Use static method from Dataset
+    else:
+        # Load training filenames (Original method)
+        path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset" # Make sure this path is correct
+        train_txt_path = f'{path}/test.txt'
+        print(f"Loading filenames from: {train_txt_path}")
+        try:
+            with open(train_txt_path) as reader:
+                for filepath in reader.readlines():
+                    filenames.append(filepath.strip())
+            print(f"Loaded {len(filenames)} filenames from {train_txt_path}")
+        except FileNotFoundError:
+            print(f"Error: {train_txt_path} not found.")
+            return # Or handle error
+        # Apply month filter only if not using CSV
+        effective_month_filter = args.train_month
 
-    dataset = Dataset(filenames, args.input_size, params, augment=False, month_filter=args.train_month)
+    if not filenames:
+         print("Error: No training filenames were loaded.")
+         return
+
+    # Create Dataset using the loaded filenames and potentially the month filter
+    print(f"Initializing dataset with {len(filenames)} images.")
+    dataset = Dataset(filenames, args.input_size, params, augment=False, month_filter=effective_month_filter) # Pass the correct filter
+    # --- End of Modified Filename Loading ---
 
     # Sampler for distributed training if needed
     if args.world_size <= 1:
@@ -86,7 +143,7 @@ def train(args, params):
     best = 0
     num_batch = len(loader)
     amp_scale = torch.cuda.amp.GradScaler()
-    criterion = util.ComputeLoss(model, params)
+    criterion = util.ComputeLoss(model, params) #
     num_warmup = max(round(params['warmup_epochs'] * num_batch), 1000)
 
     print(f"Starting training loop for {args.epochs} epochs...")
@@ -201,16 +258,31 @@ def train(args, params):
 @torch.no_grad()
 def test(args, params, model=None):
     filenames = []
-    path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset"
-    with open(f'{path}/val.txt') as reader:
-        for filepath in reader.readlines():
-            filenames.append(filepath.strip())
+    path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset" # Make sure path is correct
+    val_txt_path = f'{path}/val.txt' # Assuming validation uses val.txt
+    print(f"Loading validation filenames from: {val_txt_path}")
+    try:
+        with open(val_txt_path) as reader:
+            for filepath in reader.readlines():
+                filenames.append(filepath.strip())
+        print(f"Loaded {len(filenames)} validation filenames from {val_txt_path}")
+    except FileNotFoundError:
+        print(f"Error: {val_txt_path} not found.")
+        return 0., 0. # Return default values or handle error
 
-    # Filter for January images if month filter is specified
-   #month_filter = "09" if args.month_filter else None
+    # Filter for testing month if specified (independent of training method)
+    test_month_filter = args.test_month
+    if test_month_filter:
+         print(f"Applying test month filter: {test_month_filter}")
+         filenames = Dataset.filter_by_month(filenames, test_month_filter) # Use static method
+         print(f"Filtered to {len(filenames)} validation images for month: {test_month_filter}")
 
-    # Create Dataset with month filter if specified
-    dataset = Dataset(filenames, args.input_size, params, augment=False, month_filter=args.test_month)
+    if not filenames:
+        print("Error: No validation filenames were loaded.")
+        return 0., 0.
+
+    print(f"Initializing validation dataset with {len(filenames)} images.")
+    dataset = Dataset(filenames, args.input_size, params, augment=False, month_filter=None) # Month filter applied above
 
     loader = data.DataLoader(dataset, 8, shuffle=False,
                              num_workers=20, pin_memory=True,
@@ -303,6 +375,11 @@ def main():
                         help='Filter training images by month (e.g., 01 for January)')
     parser.add_argument('--test-month', type=str, default=None,
                         help='Filter testing images by month (e.g., 01 for January)')
+    parser.add_argument('--cluster-csv', type=str, default=None,
+                        help='Path to the CSV file containing image paths and cluster IDs.')
+    parser.add_argument('--cluster-id', type=str, default=None,
+                        help='Cluster ID to filter images from the CSV (e.g., SC1). Requires --cluster-csv.')
+    # --- End New Arguments ---
     args, _ = parser.parse_known_args()
 
     # Set local_rank from environment variable
