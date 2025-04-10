@@ -27,4 +27,3 @@ df['super_cluster'] = df['super_cluster'].fillna('SC5')
 
 # Save to a new CSV
 df[['image_path', 'super_cluster']].to_csv('new_super_clusters.csv', index=False)
-# Or, for only image_path and super_cluster:
