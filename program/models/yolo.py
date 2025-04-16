@@ -85,7 +85,7 @@ def train(args, params):
                              batch_size=args.batch_size,
                              shuffle=(sampler is None),
                              sampler=sampler,
-                             num_workers=32,
+                             num_workers=24,
                              pin_memory=True,
                              collate_fn=Dataset.collate_fn)
 
@@ -187,14 +187,31 @@ def train(args, params):
 
             # Validation
             if args.local_rank == 0:
-                print(f"Epoch {epoch + 1}/{args.epochs} completed. Testing model...")
-                last = test(args, params, ema.ema)
-                writer.writerow({
-                    'mAP': f'{last[1]:.3f}',
-                    'epoch': str(epoch + 1).zfill(3),
-                    'mAP@50': f'{last[0]:.3f}'
-                })
-                f.flush()
+                # Save last weights
+                for i, submodel in enumerate([ema.ema.model1, ema.ema.model2, ema.ema.model3], start=1):
+                    ckpt_sub = {'model': copy.deepcopy(submodel).half()}
+                    folder_path = f'./weights/model{i}'
+                    if not os.path.exists(folder_path):
+                        os.makedirs(folder_path)
+                    torch.save(ckpt_sub, f'{folder_path}/last.pt')
+
+                # Perform testing only if --no_test is not set
+                if not args.no_test:
+                    print(f"Epoch {epoch + 1}/{args.epochs} completed. Testing model...")
+                    last = test(args, params, ema.ema)
+                    writer.writerow({
+                        'mAP': f'{last[1]:.3f}',
+                        'epoch': str(epoch + 1).zfill(3),
+                        'mAP@50': f'{last[0]:.3f}'
+                    })
+                    f.flush()
+
+                    # Update best mAP and save best weights if improved
+                    if last[1] > best:
+                        best = last[1]
+                        for i, submodel in enumerate([ema.ema.model1, ema.ema.model2, ema.ema.model3], start=1):
+                            ckpt_sub = {'model': copy.deepcopy(submodel).half()}
+                            torch.save(ckpt_sub, f'./weights/model{i}/best.pt')
 
                 # Save each sub-model's weights
                 for i, submodel in enumerate([ema.ema.model1, ema.ema.model2, ema.ema.model3], start=1):
@@ -226,7 +243,7 @@ def test(args, params, model=None):
     # Create Dataset
     dataset = Dataset(filenames, args.input_size, params, augment=False)
     loader = data.DataLoader(dataset, 8, shuffle=False, # Keep batch size reasonable for memory
-                              num_workers=8, # Reduced workers slightly as a precaution
+                              num_workers=24, # Reduced workers slightly as a precaution
                               pin_memory=True,
                               collate_fn=Dataset.collate_fn)
 
@@ -438,6 +455,7 @@ def main():
     parser.add_argument('--epochs', default=5, type=int)
     parser.add_argument('--train', action='store_true')
     parser.add_argument('--test', action='store_true')
+    parser.add_argument('--no_test', action='store_true', help='Skip testing between epochs during training')
 
     args, _ = parser.parse_known_args()
 
@@ -471,4 +489,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
