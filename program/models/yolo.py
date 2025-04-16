@@ -9,11 +9,10 @@ import tqdm
 import yaml
 from torch.utils import data
 from nets import nn
-from utils import util
+from utils import util, WBF
 from utils.dataset import Dataset
 
 warnings.filterwarnings("ignore")
-
 
 # Define the wrapper class for three YOLO models
 class TripleYOLO(torch.nn.Module):
@@ -33,7 +32,6 @@ class TripleYOLO(torch.nn.Module):
 def learning_rate(args, params):
     def fn(x):
         return (1 - x / args.epochs) * (1.0 - params['lrf']) + params['lrf']
-
     return fn
 
 
@@ -104,6 +102,11 @@ def train(args, params):
     num_warmup = max(round(params['warmup_epochs'] * num_batch), 1000)
 
     print(f"Starting training loop for {args.epochs} epochs...")
+
+    # Create directories for each model's weights
+    if args.local_rank == 0:
+        for model_name in ['model1', 'model2', 'model3']:
+            os.makedirs(f'./weights/{model_name}', exist_ok=True)
 
     # CSV logging
     with open('weights/step.csv', 'w') as f:
@@ -192,22 +195,18 @@ def train(args, params):
                 })
                 f.flush()
 
-                # Update best
+                # Save each sub-model's weights
+                for model_name in ['model1', 'model2', 'model3']:
+                    sub_model = getattr(ema.ema, model_name)
+                    ckpt = {'model': copy.deepcopy(sub_model).half()}
+                    torch.save(ckpt, f'./weights/{model_name}/last.pt')
+                    if last[1] > best:
+                        torch.save(ckpt, f'./weights/{model_name}/best.pt')
+
+                # Update best mAP
                 if last[1] > best:
                     best = last[1]
-
-                # Save model
-                ckpt = {'model': copy.deepcopy(ema.ema).half()}
-                torch.save(ckpt, './weights/last.pt')
-                if best == last[1]:
-                    torch.save(ckpt, './weights/best.pt')
                 del ckpt
-
-    # Cleanup
-    if args.local_rank == 0:
-        print("Finalizing training and stripping optimizer...")
-        util.strip_optimizer('./weights/best.pt')
-        util.strip_optimizer('./weights/last.pt')
 
     torch.cuda.empty_cache()
 
@@ -227,7 +226,11 @@ def test(args, params, model=None):
                              collate_fn=Dataset.collate_fn)
 
     if model is None:
-        model = torch.load('./weights/best.pt', map_location='cuda')['model'].float()
+        # Initialize TripleYOLO and load each sub-model's best weights
+        model = TripleYOLO(len(params['names'].values())).cuda()
+        for model_name in ['model1', 'model2', 'model3']:
+            ckpt = torch.load(f'./weights/{model_name}/best.pt', map_location='cuda')
+            getattr(model, model_name).load_state_dict(ckpt['model'].state_dict())
 
     model.half()
     model.eval()
@@ -251,11 +254,6 @@ def test(args, params, model=None):
         # NMS
         targets[:, 2:] *= torch.tensor((width, height, width, height), device=targets.device)
         outputs = util.non_max_suppression(outputs, 0.001, 0.65)
-        '''
-        WBF implementation here->
-        
-        
-        '''
 
         # Metrics
         for i, output in enumerate(outputs):
