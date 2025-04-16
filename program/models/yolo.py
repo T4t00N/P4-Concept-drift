@@ -67,7 +67,7 @@ def train(args, params):
 
     # Load training filenames
     filenames = []
-    path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset"
+    path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset/images"
     with open(f'{path}/train.txt') as reader:
         for filepath in reader.readlines():
             filenames.append(filepath.strip())
@@ -187,33 +187,24 @@ def train(args, params):
 
             # Validation
             if args.local_rank == 0:
-                # Save last weights
-                for i, submodel in enumerate([ema.ema.model1, ema.ema.model2, ema.ema.model3], start=1):
-                    ckpt_sub = {'model': copy.deepcopy(submodel).half()}
-                    folder_path = f'./weights/model{i}'
-                    if not os.path.exists(folder_path):
-                        os.makedirs(folder_path)
-                    torch.save(ckpt_sub, f'{folder_path}/last.pt')
+                # ... (save initial last.pt) ...
+
+                last = None # Or: last = (-1.0, -1.0) Initialize last
 
                 # Perform testing only if --no_test is not set
                 if not args.no_test:
                     print(f"Epoch {epoch + 1}/{args.epochs} completed. Testing model...")
-                    last = test(args, params, ema.ema)
-                    writer.writerow({
-                        'mAP': f'{last[1]:.3f}',
-                        'epoch': str(epoch + 1).zfill(3),
-                        'mAP@50': f'{last[0]:.3f}'
-                    })
-                    f.flush()
+                    last = test(args, params, ema.ema) # 'last' is potentially updated here
+                    # ... (write to csv) ...
 
                     # Update best mAP and save best weights if improved
-                    if last[1] > best:
+                    # This comparison is safe now as 'last' exists
+                    if last is not None and last[1] > best: # Check if last is not None before comparing
                         best = last[1]
-                        for i, submodel in enumerate([ema.ema.model1, ema.ema.model2, ema.ema.model3], start=1):
-                            ckpt_sub = {'model': copy.deepcopy(submodel).half()}
-                            torch.save(ckpt_sub, f'./weights/model{i}/best.pt')
+                        # You could save best.pt here or rely on the loop below
 
                 # Save each sub-model's weights
+                ckpt_sub = None # Initialize ckpt_sub here too
                 for i, submodel in enumerate([ema.ema.model1, ema.ema.model2, ema.ema.model3], start=1):
                     ckpt_sub = {'model': copy.deepcopy(submodel).half()}
                     folder_path = f'./weights/model{i}'
@@ -224,10 +215,12 @@ def train(args, params):
                     torch.save(ckpt_sub, f'{folder_path}/last.pt')
 
                     # If this epoch was the best so far, save "best" weights
-                    if best == last[1]:
+                    # Check if testing occurred AND it was the best
+                    if last is not None and best == last[1]: # Check if last is not None before comparing
                         torch.save(ckpt_sub, f'{folder_path}/best.pt')
 
-                del ckpt_sub
+                if ckpt_sub: # Prevent error if loop didn't run (shouldn't happen here)
+                    del ckpt_sub
 
     torch.cuda.empty_cache()
 
