@@ -9,7 +9,8 @@ import tqdm
 import yaml
 from torch.utils import data
 from nets import nn
-from utils import util, WBF
+from utils import util
+from utils.WBF import weighted_boxes_fusion
 from utils.dataset import Dataset
 
 warnings.filterwarnings("ignore")
@@ -217,94 +218,216 @@ def train(args, params):
 @torch.no_grad()
 def test(args, params, model=None):
     filenames = []
-    path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset"
+    path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset" # Consider making path an argument
     with open(f'{path}/test.txt') as reader:
         for filepath in reader.readlines():
             filenames.append(filepath.strip())
 
-    # Create Dataset (again, augment=False, no mosaic)
+    # Create Dataset
     dataset = Dataset(filenames, args.input_size, params, augment=False)
-    loader = data.DataLoader(dataset, 8, shuffle=False,
-                             num_workers=32, pin_memory=True,
-                             collate_fn=Dataset.collate_fn)
+    loader = data.DataLoader(dataset, 8, shuffle=False, # Keep batch size reasonable for memory
+                              num_workers=8, # Reduced workers slightly as a precaution
+                              pin_memory=True,
+                              collate_fn=Dataset.collate_fn)
 
     if model is None:
         # Initialize TripleYOLO and load each sub-model's best weights
+        print("Loading models...")
         model = TripleYOLO(len(params['names'].values())).cuda()
         for model_name in ['model1', 'model2', 'model3']:
-            ckpt = torch.load(f'./weights/{model_name}/best.pt', map_location='cuda')
-            getattr(model, model_name).load_state_dict(ckpt['model'].state_dict())
+            ckpt_path = f'./weights/{model_name}/best.pt'
+            print(f"Loading {ckpt_path}")
+            ckpt = torch.load(ckpt_path, map_location='cuda')
+            # Ensure the state dict keys match your TripleYOLO structure
+            # If TripleYOLO has attributes 'model1', 'model2', 'model3'
+            # which are the actual YOLO models:
+            model_component = getattr(model, model_name)
+            # Check if ckpt['model'] is a state_dict or a model object
+            if isinstance(ckpt['model'], dict): # It's likely a state_dict already
+                 model_state_dict = ckpt['model']
+            else: # It's a model object, get its state_dict
+                 model_state_dict = ckpt['model'].state_dict()
 
-    model.half()
+            # Adjust keys if necessary (e.g., remove 'module.' prefix if saved with DataParallel)
+            model_state_dict = {k.replace('module.', ''): v for k, v in model_state_dict.items()}
+
+            model_component.load_state_dict(model_state_dict)
+            print(f"{model_name} loaded.")
+        print("All models loaded.")
+
+
+    model.half() # Use FP16
     model.eval()
 
     # iou vector for mAP@0.5:0.95
-    iou_v = torch.linspace(0.5, 0.95, 10).cuda()
+    iou_v = torch.linspace(0.5, 0.95, 10).cuda() # Use half() if metrics support it, else float()
     n_iou = iou_v.numel()
 
     m_pre, m_rec, map50, mean_ap = 0., 0., 0., 0.
     metrics = []
     p_bar = tqdm.tqdm(loader, desc=('%10s' * 3) % ('precision', 'recall', 'mAP'))
+
+    # WBF parameters (adjust as needed)
+    wbf_iou_thr = 0.55
+    wbf_skip_box_thr = 0.001
+    wbf_weights = [1, 1, 1] # Equal weights for the three models
+
     for samples, targets, shapes in p_bar:
-        samples = samples.cuda().half() / 255
-        _, _, height, width = samples.shape
+        samples = samples.cuda().half() / 255 # Normalize to [0, 1]
+        _, _, height, width = samples.shape # Input size height/width
         targets = targets.cuda()
+        targets[:, 2:] *= torch.tensor((width, height, width, height), device=targets.device) # Scale targets to input size
 
-        # Forward: Use only the first model's output for testing
-        outputs_list = model(samples)
-        outputs = outputs_list[0]  # Select the first model's outputs
+        # Forward pass: get outputs from all models
+        outputs_list = model(samples) # List of outputs [model1_out, model2_out, model3_out]
 
-        # NMS
-        targets[:, 2:] *= torch.tensor((width, height, width, height), device=targets.device)
-        outputs = util.non_max_suppression(outputs, 0.001, 0.65)
+        # Apply NMS per model output
+        # conf_thres should match wbf_skip_box_thr for consistency
+        # iou_thres for NMS can be different from WBF IoU threshold
+        nms_conf_thres = 0.001
+        nms_iou_thres = 0.65
+        outputs_nms = [util.non_max_suppression(out, nms_conf_thres, nms_iou_thres) for out in outputs_list]
+        # outputs_nms is now: [ [img1_m1, img2_m1,...], [img1_m2, img2_m2,...], [img1_m3, img2_m3,...] ]
 
-        # Metrics
-        for i, output in enumerate(outputs):
-            labels = targets[targets[:, 0] == i, 1:]
-            correct = torch.zeros(output.shape[0], n_iou, dtype=torch.bool).cuda()
+        # Iterate through each image in the batch
+        num_images = samples.shape[0]
+        for i in range(num_images):
+            # Prepare data for WBF for the current image 'i'
+            boxes_list_wbf = []
+            scores_list_wbf = []
+            labels_list_wbf = []
+
+            # Collect results from each model for image 'i'
+            for model_idx in range(len(outputs_nms)):
+                output_nms_image = outputs_nms[model_idx][i] # Detections [x1, y1, x2, y2, conf, class] for image i, model model_idx
+                if output_nms_image is not None and len(output_nms_image) > 0:
+                    # Convert to numpy and normalize boxes to [0, 1] for WBF
+                    boxes = output_nms_image[:, :4].clone()
+                    # Normalize by input image dimensions (height, width)
+                    boxes[:, [0, 2]] /= width  # x1, x2
+                    boxes[:, [1, 3]] /= height # y1, y2
+                    # Clamp values to [0, 1] to avoid potential floating point issues
+                    boxes = torch.clamp(boxes, min=0.0, max=1.0)
+
+                    scores = output_nms_image[:, 4]
+                    labels = output_nms_image[:, 5]
+
+                    boxes_list_wbf.append(boxes.cpu().numpy())
+                    scores_list_wbf.append(scores.cpu().numpy())
+                    labels_list_wbf.append(labels.cpu().numpy())
+                else:
+                    # Add empty arrays if a model had no detections
+                    boxes_list_wbf.append(numpy.zeros((0, 4)))
+                    scores_list_wbf.append(numpy.zeros((0,)))
+                    labels_list_wbf.append(numpy.zeros((0,)))
+
+            # Perform Weighted Boxes Fusion if there are any boxes
+            if any(len(b) > 0 for b in boxes_list_wbf):
+                boxes_fused, scores_fused, labels_fused = weighted_boxes_fusion(
+                    boxes_list_wbf,
+                    scores_list_wbf,
+                    labels_list_wbf,
+                    weights=wbf_weights,
+                    iou_thr=wbf_iou_thr,
+                    skip_box_thr=wbf_skip_box_thr,
+                    # conf_type='avg' # Or other options: 'max', 'box_and_model_avg'
+                )
+
+                # Convert fused results back to tensor format [x1, y1, x2, y2, score, label]
+                # Denormalize boxes back to input image coordinates
+                boxes_fused_tensor = torch.from_numpy(boxes_fused).cuda().float()
+                boxes_fused_tensor[:, [0, 2]] *= width
+                boxes_fused_tensor[:, [1, 3]] *= height
+
+                output = torch.cat([
+                    boxes_fused_tensor,
+                    torch.from_numpy(scores_fused).unsqueeze(1).cuda().float(),
+                    torch.from_numpy(labels_fused).unsqueeze(1).cuda().float()
+                ], dim=1)
+            else:
+                # Create an empty tensor if no boxes were found by any model after NMS/filtering
+                 output = torch.zeros((0, 6)).cuda()
+
+            # --- Start of original metrics calculation logic ---
+            # Use the fused 'output' tensor instead of single-model output
+
+            labels = targets[targets[:, 0] == i, 1:] # Ground truth for image i
+            correct = torch.zeros(output.shape[0], n_iou, dtype=torch.bool, device=output.device)
+
             if output.shape[0] == 0:
-                if labels.shape[0]:
-                    metrics.append((correct, *torch.zeros((3, 0)).cuda()))
-                continue
+                if labels.shape[0]: # If no detections but there are labels
+                    metrics.append((correct.cpu(), torch.zeros((3, 0)).cpu())) # Ensure on CPU for numpy conversion later
+                continue # Go to next image
 
             detections = output.clone()
+            # Scale fused detections to original image size
             util.scale(detections[:, :4], samples[i].shape[1:], shapes[i][0], shapes[i][1])
+
             if labels.shape[0]:
-                tbox = labels[:, 1:5].clone()
-                tbox[:, 0] = labels[:, 1] - labels[:, 3] / 2
-                tbox[:, 1] = labels[:, 2] - labels[:, 4] / 2
-                tbox[:, 2] = labels[:, 1] + labels[:, 3] / 2
-                tbox[:, 3] = labels[:, 2] + labels[:, 4] / 2
+                # Ground truth boxes are already scaled to input size, scale them to original size
+                tbox = util.wh2xy(labels[:, 1:5]) # Convert target format if necessary
                 util.scale(tbox, samples[i].shape[1:], shapes[i][0], shapes[i][1])
+                t_tensor = torch.cat((labels[:, 0:1], tbox), 1) # Target tensor [class, x1, y1, x2, y2]
 
-                correct_arr = numpy.zeros((detections.shape[0], iou_v.shape[0]), dtype=bool)
-                t_tensor = torch.cat((labels[:, 0:1], tbox), 1)
-                iou = util.box_iou(t_tensor[:, 1:], detections[:, :4])
-                correct_class = t_tensor[:, 0:1] == detections[:, 5]
+                # Calculate IoU between fused detections and ground truth
+                iou = util.box_iou(t_tensor[:, 1:], detections[:, :4]) # [n_targets, n_detections]
+                # Find correct matches for each IoU threshold
+                correct_class = t_tensor[:, 0:1] == detections[:, 5] # Check class match [n_targets, n_detections]
 
-                for j in range(n_iou):
+                for j in range(n_iou): # For each IoU threshold
+                    # Find matches: IoU >= threshold AND Class matches
                     x = torch.where((iou >= iou_v[j]) & correct_class)
                     if x[0].shape[0]:
+                        # matches = [target_idx, detection_idx, iou_value]
                         matches = torch.cat((torch.stack(x, 1), iou[x[0], x[1]][:, None]), 1).cpu().numpy()
-                        if x[0].shape[0] > 1:
-                            matches = matches[matches[:, 2].argsort()[::-1]]  # sort by iou
-                            matches = matches[numpy.unique(matches[:, 1], return_index=True)[1]]
+                        if x[0].shape[0] > 1: # If more than one match
+                             # Sort by IoU descending
+                            matches = matches[matches[:, 2].argsort()[::-1]]
+                            # Keep only best detection match for each target
                             matches = matches[numpy.unique(matches[:, 0], return_index=True)[1]]
-                        correct_arr[matches[:, 1].astype(int), j] = True
+                            # Keep only best target match for each detection
+                            matches = matches[numpy.unique(matches[:, 1], return_index=True)[1]]
+                        # Mark the matched detections as correct for this IoU threshold
+                        correct[matches[:, 1].astype(int), j] = True
 
-                correct = torch.tensor(correct_arr, device=iou_v.device)
+            # Append metrics: (correct_flags, detection_confidence, detection_class, target_class)
+            # Ensure all tensors are moved to CPU before appending if they will be concatenated later into NumPy arrays
+            metrics.append((correct.cpu(), output[:, 4].cpu(), output[:, 5].cpu(), labels[:, 0].cpu()))
+            # --- End of original metrics calculation logic ---
 
-            metrics.append((correct, output[:, 4], output[:, 5], labels[:, 0]))
+    # Compute final metrics
+    if not metrics: # Handle case where metrics list is empty
+        print("No metrics recorded.")
+        return 0.0, 0.0
 
-    # Compute metrics
-    metrics = [torch.cat(x, 0).cpu().numpy() for x in zip(*metrics)]
-    if len(metrics) and metrics[0].any():
-        tp, fp, m_pre, m_rec, map50, mean_ap = util.compute_ap(*metrics)
+    try:
+        # Ensure all elements in metrics are tuples of tensors before concatenating
+        metrics_cat = [torch.cat([m[j] for m in metrics], 0) for j in range(4)]
+        # Convert to numpy for compute_ap
+        metrics_np = [m.numpy() for m in metrics_cat]
 
-    print('%10.3g' * 3 % (m_pre, m_rec, mean_ap))
+        if len(metrics_np) and metrics_np[0].any():
+            # Pass requires_grad=False tensors if compute_ap doesn't handle them
+            tp, fp, m_pre, m_rec, map50, mean_ap = util.compute_ap(*metrics_np, num_classes=len(params['names'])) # Pass num_classes if needed by compute_ap
+        else:
+             print("No detections or no correct detections found.")
+             tp, fp, m_pre, m_rec, map50, mean_ap = (0,) * 6 # Or appropriate default values
 
-    model.float()  # re-enable FP32 if needed
-    return map50, mean_ap
+    except Exception as e:
+         print(f"Error during metric computation: {e}")
+         print(f"Metrics list length: {len(metrics)}")
+         # Optionally print shapes or types of elements in metrics for debugging
+         # for idx, item in enumerate(metrics):
+         #     print(f"Metric item {idx}: {[t.shape if hasattr(t,'shape') else type(t) for t in item]}")
+         m_pre, m_rec, map50, mean_ap = 0., 0., 0., 0. # Default values on error
+
+
+    # Print metrics
+    print('%10s %10s %10s' % ('precision', 'recall', 'mAP_0.5:0.95'))
+    print('%10.3g %10.3g %10.3g' % (m_pre, m_rec, mean_ap))
+
+    model.float() # Switch back to FP32 if needed elsewhere
+    return map50, mean_ap # Return mAP@0.5 and mAP@0.5:0.95
 
 
 def main():
@@ -348,3 +471,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
