@@ -5,3 +5,4 @@
 
 ## **Nice-To-Have**
 
+- Wandb
