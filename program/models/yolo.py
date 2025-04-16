@@ -15,15 +15,31 @@ from utils.dataset import Dataset
 warnings.filterwarnings("ignore")
 
 
+# Define the wrapper class for three YOLO models
+class TripleYOLO(torch.nn.Module):
+    def __init__(self, num_classes):
+        super(TripleYOLO, self).__init__()
+        self.model1 = nn.yolo_v8_n(num_classes)
+        self.model2 = nn.yolo_v8_n(num_classes)
+        self.model3 = nn.yolo_v8_n(num_classes)
+
+    def forward(self, x):
+        outputs1 = self.model1(x)
+        outputs2 = self.model2(x)
+        outputs3 = self.model3(x)
+        return [outputs1, outputs2, outputs3]
+
+
 def learning_rate(args, params):
     def fn(x):
         return (1 - x / args.epochs) * (1.0 - params['lrf']) + params['lrf']
+
     return fn
 
 
 def train(args, params):
-    # Model
-    model = nn.yolo_v8_n(len(params['names'].values())).cuda()
+    # Model: Use TripleYOLO instead of a single YOLO model
+    model = TripleYOLO(len(params['names'].values())).cuda()
 
     # Optimizer
     accumulate = max(round(64 / (args.batch_size * args.world_size)), 1)
@@ -84,7 +100,7 @@ def train(args, params):
     best = 0
     num_batch = len(loader)
     amp_scale = torch.cuda.amp.GradScaler()
-    criterion = util.ComputeLoss(model, params)
+    criterion = util.ComputeLoss(model.module.model1 if args.world_size > 1 else model.model1, params)
     num_warmup = max(round(params['warmup_epochs'] * num_batch), 1000)
 
     print(f"Starting training loop for {args.epochs} epochs...")
@@ -131,10 +147,10 @@ def train(args, params):
                             fp = [params['warmup_momentum'], params['momentum']]
                             y['momentum'] = numpy.interp(x, xp, fp)
 
-                # Forward
+                # Forward: Compute loss for all three models and sum them
                 with torch.cuda.amp.autocast():
-                    outputs = model(samples)
-                loss = criterion(outputs, targets)
+                    outputs_list = model(samples)
+                    loss = sum(criterion(outputs, targets) for outputs in outputs_list)
 
                 m_loss.update(loss.item(), samples.size(0))
 
@@ -160,7 +176,7 @@ def train(args, params):
                     s = ('%10s' * 2 + '%10.4g') % (f'{epoch + 1}/{args.epochs}', memory, m_loss.avg)
                     p_bar.set_description(s)
 
-                del loss, outputs
+                del loss, outputs_list
 
             # Scheduler step
             scheduler.step()
@@ -228,8 +244,9 @@ def test(args, params, model=None):
         _, _, height, width = samples.shape
         targets = targets.cuda()
 
-        # Forward
-        outputs = model(samples)
+        # Forward: Use only the first model's output for testing
+        outputs_list = model(samples)
+        outputs = outputs_list[0]  # Select the first model's outputs
 
         # NMS
         targets[:, 2:] *= torch.tensor((width, height, width, height), device=targets.device)
@@ -263,7 +280,6 @@ def test(args, params, model=None):
                     x = torch.where((iou >= iou_v[j]) & correct_class)
                     if x[0].shape[0]:
                         matches = torch.cat((torch.stack(x, 1), iou[x[0], x[1]][:, None]), 1).cpu().numpy()
-                        # Filter duplicates
                         if x[0].shape[0] > 1:
                             matches = matches[matches[:, 2].argsort()[::-1]]  # sort by iou
                             matches = matches[numpy.unique(matches[:, 1], return_index=True)[1]]
@@ -290,15 +306,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input-size', default=384, type=int)
     parser.add_argument('--batch-size', default=128, type=int)
-    # Remove: parser.add_argument('--local_rank', default=0, type=int)
     parser.add_argument('--epochs', default=5, type=int)
     parser.add_argument('--train', action='store_true')
     parser.add_argument('--test', action='store_true')
 
-    # Use parse_known_args to ignore unrecognized arguments
     args, _ = parser.parse_known_args()
 
-    # Set local_rank from environment variable
     args.local_rank = int(os.environ.get('LOCAL_RANK', 0))
     args.world_size = int(os.getenv('WORLD_SIZE', 1))
     print(f"Args parsed: {args}")
@@ -325,6 +338,7 @@ def main():
         train(args, params)
     if args.test:
         test(args, params)
+
 
 if __name__ == "__main__":
     main()
