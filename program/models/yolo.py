@@ -251,6 +251,11 @@ def test(args, params, model=None):
         # NMS
         targets[:, 2:] *= torch.tensor((width, height, width, height), device=targets.device)
         outputs = util.non_max_suppression(outputs, 0.001, 0.65)
+        '''
+        WBF implementation here->
+        
+        
+        '''
 
         # Metrics
         for i, output in enumerate(outputs):
