@@ -196,17 +196,20 @@ def train(args, params):
                 f.flush()
 
                 # Save each sub-model's weights
-                for model_name in ['model1', 'model2', 'model3']:
-                    sub_model = getattr(ema.ema, model_name)
-                    ckpt = {'model': copy.deepcopy(sub_model).half()}
-                    torch.save(ckpt, f'./weights/{model_name}/last.pt')
-                    if last[1] > best:
-                        torch.save(ckpt, f'./weights/{model_name}/best.pt')
+                for i, submodel in enumerate([ema.ema.model1, ema.ema.model2, ema.ema.model3], start=1):
+                    ckpt_sub = {'model': copy.deepcopy(submodel).half()}
+                    folder_path = f'./weights/model{i}'
+                    if not os.path.exists(folder_path):
+                        os.makedirs(folder_path)
 
-                # Update best mAP
-                if last[1] > best:
-                    best = last[1]
-                del ckpt
+                    # Save "last" weights for each model
+                    torch.save(ckpt_sub, f'{folder_path}/last.pt')
+
+                    # If this epoch was the best so far, save "best" weights
+                    if best == last[1]:
+                        torch.save(ckpt_sub, f'{folder_path}/best.pt')
+
+                del ckpt_sub
 
     torch.cuda.empty_cache()
 
