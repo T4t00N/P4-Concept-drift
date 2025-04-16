@@ -49,7 +49,7 @@ def main():
     image_paths = get_image_paths(root_folder)
 
     
-    temp = 0.01
+    temp = 0.1
     for image_path in image_paths[1000:]:
 
         feature_vector = feature_extractor(model_path, image_path, device) # Batch of 1 feature vectors
