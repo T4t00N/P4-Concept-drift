@@ -94,11 +94,10 @@ class Dataset(data.Dataset):
         #print("Person cache path:", person_cache_path)
 
         # If the label cache already exists, load it
-        #if os.path.exists(label_cache_path):
-        #    print(f"Loading label from {label_cache_path}")
-        #    return torch.load(label_cache_path)
-        #else:
-        #    print(f"Creating label from {label_cache_path}")
+        if os.path.exists(label_cache_path):
+            return torch.load(label_cache_path)
+        else:
+            print(f"Creating label from {label_cache_path}")
 
         # Build up the label dictionary
         label_dict = {}
