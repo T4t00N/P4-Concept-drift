@@ -43,16 +43,13 @@ logging.getLogger("py.warnings").setLevel(logging.ERROR)
 
 os.environ["TORCH_CPP_LOG_LEVEL"] = "ERROR"
 
-
 def init_moco(device: str):
     """Load a frozen MoCo‑v2 encoder checkpoint."""
     ckpt = "/ceph/project/P4-concept-drift/YOLOv8-Anton/data/moco_epoch_100.pt"
     return fv.load_moco_model(ckpt, device)
 
-
 def init_mlp(input_dim=128, hidden_dim=512, num_experts=3, device="cpu"):
     return MLP(input_dim, hidden_dim, num_experts).to(device)
-
 
 def init_yolos(num_classes: int, device: str):
     """Return three independent YOLO‑v8‑n models."""
@@ -163,6 +160,16 @@ def train(args, hyp):
     util.setup_seed()
     util.setup_multi_processes()
 
+    # Define save_model function to handle saving state dictionaries
+    def save_model(mlp, yolos, save_path):
+        ckpt = {
+            "mlp": mlp.state_dict(),
+            "yolo1": yolos[0].state_dict(),
+            "yolo2": yolos[1].state_dict(),
+            "yolo3": yolos[2].state_dict()
+        }
+        torch.save(ckpt, save_path)
+
     # ---------------- loop -------------------------------------------------
     num_batches = len(dl)
     num_warmup = max(round(hyp["warmup_epochs"] * num_batches), 1000)
@@ -210,22 +217,27 @@ def train(args, hyp):
 
         sched.step()
 
+        # Save checkpoint after every second epoch
+        if rank == 0 and (ep + 1) % 2 == 0:
+            checkpoint_dir = Path("weights/checkpoints")
+            checkpoint_dir.mkdir(exist_ok=True, parents=True)
+            save_path = checkpoint_dir / f"epoch_{ep+1}.pt"
+            save_model(mlp, yolos, save_path)
+            wandb.save(str(save_path))
+            print(f"Checkpoint saved at epoch {ep+1}")
+
         # ---------------- wandb logging -----------------------------------
         if rank == 0:
             wandb.log({"epoch": ep + 1, "loss": avg.avg, "lr": sched.get_last_lr()[0]})
 
-    # ---------------- save weights ----------------------------------------
+    # ---------------- save final weights ----------------------------------------
     if rank == 0:
         print("Training finished → saving weights …")
-        save_dir = Path("weights"); save_dir.mkdir(exist_ok=True)
-        ckpt = {"mlp": mlp.state_dict(),
-                "yolo1": yolos[0].state_dict() if not isinstance(yolos[0], torch.nn.parallel.DistributedDataParallel) else yolos[0].module.state_dict(),
-                "yolo2": yolos[1].state_dict() if not isinstance(yolos[1], torch.nn.parallel.DistributedDataParallel) else yolos[1].module.state_dict(),
-                "yolo3": yolos[2].state_dict() if not isinstance(yolos[2], torch.nn.parallel.DistributedDataParallel) else yolos[2].module.state_dict()}
-        torch.save(ckpt, save_dir / "final.pt")
-
-        # wandb: save artefacts and finish
-        wandb.save(str(save_dir / "final.pt"))
+        save_dir = Path("weights")
+        save_dir.mkdir(exist_ok=True)
+        save_path = save_dir / "final.pt"
+        save_model(mlp, yolos, save_path)
+        wandb.save(str(save_path))
         wandb_run.finish()
 
 # ----------------------------------------------------------------------------------
@@ -253,7 +265,6 @@ def main():
 
     if args.train:
         train(args, hyp)
-
 
 if __name__ == "__main__":
     main()
