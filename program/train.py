@@ -11,6 +11,10 @@ from torch.utils import data
 import tqdm
 import yaml
 
+import os
+import warnings
+import logging
+
 # ---------------------------------------------------------------------------
 # 0. local project imports ---------------------------------------------------
 # ---------------------------------------------------------------------------
@@ -24,6 +28,18 @@ from utils.dataset import Dataset
 # ---------------------------------------------------------------------------
 # 1. helpers ---------------------------------------------------------------
 # ---------------------------------------------------------------------------
+
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+# Torch and tqdm sometimes log through the logging module – keep those quiet too
+logging.getLogger("torch").setLevel(logging.ERROR)
+logging.getLogger("py.warnings").setLevel(logging.ERROR)
+
+# If you ever launch through torchrun/torch.distributed, this env‑var
+# suppresses the extra “W04…” banner lines printed by torchrun itself.
+os.environ["TORCH_CPP_LOG_LEVEL"] = "ERROR"
 
 def init_moco(device: str):
     """Load a frozen MoCo‑v2 encoder checkpoint."""
