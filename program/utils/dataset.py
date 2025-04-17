@@ -76,29 +76,29 @@ class Dataset(data.Dataset):
     def load_label(filenames, person_only=False):
         # Setup cache directory
         cache_dir = "/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset/cache"
-        print("Cache directory:", cache_dir)
+        #print("Cache directory:", cache_dir)
         os.makedirs(cache_dir, exist_ok=True)
 
         # Build base name from the parent folder of the first filename
         base_name = os.path.basename(os.path.dirname(filenames[0]))
-        print("base_name:", base_name)
+        #print("base_name:", base_name)
 
         # Build the path for the label cache
         label_cache_filename = f"{base_name}_label_cache.pt"
         label_cache_path = os.path.join(cache_dir, label_cache_filename)
-        print("Cache path:", label_cache_path)
+        #print("Cache path:", label_cache_path)
 
         # Build the path for the person-only label cache
         person_cache_filename = f"{base_name}_person_label_cache.pt"
         person_cache_path = os.path.join(cache_dir, person_cache_filename)
-        print("Person cache path:", person_cache_path)
+        #print("Person cache path:", person_cache_path)
 
         # If the label cache already exists, load it
-        if os.path.exists(label_cache_path):
-            print(f"Loading label from {label_cache_path}")
-            return torch.load(label_cache_path)
-        else:
-            print(f"Creating label from {label_cache_path}")
+        #if os.path.exists(label_cache_path):
+        #    print(f"Loading label from {label_cache_path}")
+        #    return torch.load(label_cache_path)
+        #else:
+        #    print(f"Creating label from {label_cache_path}")
 
         # Build up the label dictionary
         label_dict = {}
