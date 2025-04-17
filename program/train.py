@@ -222,7 +222,7 @@ def train(args, hyp):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input-size', type=int, default=384)
-    parser.add_argument('--batch-size', type=int, default=64)
+    parser.add_argument('--batch-size', type=int, default=128)
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--train', action='store_true', default=True)
     parser.add_argument('--local_rank', type=int, default=int(os.getenv('LOCAL_RANK', 0)))
