@@ -32,10 +32,9 @@
 Data structure;
 program
 └──weights
-    │──yolo_checkpoints
-    │    └──epoch_2.pt
-    └──MoCo_checkpoints
-        └──moco_epoch_100.pt
+    └──checkpoints
+       │──epoch_2.pt
+       └──moco_epoch_100.pt
 ```
 
 - Run "docker compose up --build"
