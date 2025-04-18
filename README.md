@@ -40,7 +40,7 @@ program
 - Run "docker compose up --build"
 
 
-### Proposed Model Arcitecture
+### Proposed Model Architecture
 
 <div align="center"> 
   <img src="misc/baseline_architecture.png" alt="Architecture Diagram" />
