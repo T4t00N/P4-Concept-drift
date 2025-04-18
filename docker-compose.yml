@@ -1,0 +1,10 @@
+version: "3.8"
+
+services:
+  yolo-api:
+    build: .
+    ports:
+      - "8000:8000"               # host:container
+    environment:
+      - PYTHONPATH=/app/program   # so FastAPI finds your modules
+    restart: unless-stopped

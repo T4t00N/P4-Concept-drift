@@ -1,1 +1,3 @@
-# P4-Concept-drift
+### **How to run**
+
+docker compose up --build
