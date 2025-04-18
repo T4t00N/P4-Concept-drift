@@ -28,7 +28,7 @@
 
 - Run code and download weights into weights folder like showed:
 
-```mermaid
+```
 Data structure;
 program
 └──weights
