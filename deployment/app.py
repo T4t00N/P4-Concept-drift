@@ -20,7 +20,7 @@ from deployment.inference_core import EnsemblePredictor
 # ── paths – adjust if your project layout differs ────────────────────────────
 ROOT = Path(__file__).resolve().parents[1]          # project‑root
 CKPT   = ROOT / "program/weights/checkpoints/epoch_2.pt"
-MOCO   = ROOT / "/ceph/project/P4-concept-drift/YOLOv8-Anton/weights/moco_epoch_100.pt"
+MOCO   = ROOT / "program/weights/checkpoints/moco_epoch_100.pt"
 HYP    = ROOT / "program/utils/args.yaml"
 
 # ── app & globals ─────────────────────────────────────────────────────────────
@@ -39,7 +39,7 @@ async def _load_models():
         weights_ckpt=str(CKPT),
         moco_ckpt=str(MOCO),
         hyp_yaml=str(HYP),
-        device="cuda",           # change to "cpu" if no GPU
+        device="cpu",           # change to "cpu" if no GPU
         input_size=384,
     )
 
