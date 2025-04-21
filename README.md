@@ -1,9 +1,9 @@
 
 ### Badges
-  
-  
 <!-- Badges -->
 <p>
+
+
   <a href="https://github.com/T4t00N/P4-Concept-drift/graphs/contributors">
     <img src="https://img.shields.io/github/contributors/T4t00N/P4-Concept-drift" alt="contributors" />
   </a>
@@ -16,6 +16,9 @@
   <a href="https://github.com/T4t00N/P4-Concept-drift/blob/main/LICENSE">
     <img src="https://img.shields.io/github/license/T4t00N/P4-Concept-drift.svg" alt="license" />
   </a>
+<a href="http://13.60.203.249:8000/">
+  <img src="https://img.shields.io/badge/FastAPI-running-success" alt="FastAPI" />
+</a>
 </p>
 
 
