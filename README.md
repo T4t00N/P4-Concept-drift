@@ -1,9 +1,20 @@
+# P4-Concept-drift
+
+🚀 **Run the Application** 🚀
+
+To access the live version of the application, click the button below:
+
+<div style="text-align: center;">
+  <a href="http://13.60.203.249:8000/">
+    <img src="https://img.shields.io/badge/Launch_App-Now-green?logo=fastapi&style=for-the-badge" alt="Launch App" />
+  </a>
+</div>
+
+---
 
 ### Badges
-<!-- Badges -->
+
 <p>
-
-
   <a href="https://github.com/T4t00N/P4-Concept-drift/graphs/contributors">
     <img src="https://img.shields.io/github/contributors/T4t00N/P4-Concept-drift" alt="contributors" />
   </a>
@@ -16,30 +27,7 @@
   <a href="https://github.com/T4t00N/P4-Concept-drift/blob/main/LICENSE">
     <img src="https://img.shields.io/github/license/T4t00N/P4-Concept-drift.svg" alt="license" />
   </a>
-<a href="http://13.60.203.249:8000/">
-  <img src="https://img.shields.io/badge/FastAPI-running-success" alt="FastAPI" />
-</a>
 </p>
-
-
-
-
-
-### **How to run**
-
-- Run code and download weights into weights folder like showed:
-
-```
-Data structure;
-program
-└──weights
-    └──checkpoints
-       │──epoch_2.pt
-       └──moco_epoch_100.pt
-```
-
-- Run "docker compose up --build"
-
 
 ### Proposed Model Architecture
 
