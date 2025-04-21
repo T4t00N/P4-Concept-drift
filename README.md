@@ -1,7 +1,5 @@
 
-  <p>
-    An awesome README template for your projects! 
-  </p>
+### Badges
   
   
 <!-- Badges -->
