@@ -5,7 +5,7 @@
 To access the live version of the application, click the button below:
 
 <div style="text-align: center;">
-  <a href="http://56.228.4.93:8000/">
+  <a href="http://56.228.4.93:8000/" target="_blank">
     <img src="https://img.shields.io/badge/Launch_App-Now-green?logo=fastapi&style=for-the-badge" alt="Launch App" />
   </a>
 </div>
@@ -14,33 +14,31 @@ To access the live version of the application, click the button below:
 
 To test the system use this sample:
 
-[![Use Sample Image](https://img.shields.io/badge/use-sample_image-blue)](https://raw.githubusercontent.com/T4t00N/P4-Concept-drift/develop/misc/sample_image.jpg)
-
+<a href="https://raw.githubusercontent.com/T4t00N/P4-Concept-drift/develop/misc/sample_image.jpg" target="_blank">
+  <img src="https://img.shields.io/badge/use-sample_image-blue" alt="Use Sample Image" />
+</a>
 
 ---
 
-
 ### 🟢 Current app status using healthchecks.io
 
-
-![YOLO Ensemble App](https://healthchecks.io/b/2/56b02c9d-d5a4-4db8-9646-e1845dff1d0c.svg)
-
+<img src="https://healthchecks.io/b/2/56b02c9d-d5a4-4db8-9646-e1845dff1d0c.svg" alt="YOLO Ensemble App" />
 
 ---
 
 ### 🏷️ Badges
 
 <p>
-  <a href="https://github.com/T4t00N/P4-Concept-drift/graphs/contributors">
+  <a href="https://github.com/T4t00N/P4-Concept-drift/graphs/contributors" target="_blank">
     <img src="https://img.shields.io/github/contributors/T4t00N/P4-Concept-drift" alt="contributors" />
   </a>
-  <a href="https://github.com/T4t00N/P4-Concept-drift/commits">
+  <a href="https://github.com/T4t00N/P4-Concept-drift/commits" target="_blank">
     <img src="https://img.shields.io/github/last-commit/T4t00N/P4-Concept-drift" alt="last update" />
   </a>
-  <a href="https://github.com/T4t00N/P4-Concept-drift/issues">
+  <a href="https://github.com/T4t00N/P4-Concept-drift/issues" target="_blank">
     <img src="https://img.shields.io/github/issues/T4t00N/P4-Concept-drift" alt="open issues" />
   </a>
-  <a href="https://github.com/T4t00N/P4-Concept-drift/blob/main/LICENSE">
+  <a href="https://github.com/T4t00N/P4-Concept-drift/blob/main/LICENSE" target="_blank">
     <img src="https://img.shields.io/github/license/T4t00N/P4-Concept-drift.svg" alt="license" />
   </a>
 </p>
@@ -50,7 +48,3 @@ To test the system use this sample:
 <div align="center"> 
   <img src="misc/baseline_architecture.png" alt="Architecture Diagram" />
 </div>
-
-
-
-
