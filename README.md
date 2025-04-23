@@ -10,8 +10,13 @@ To access the live version of the application, click the button below:
   </a>
 </div>
 
+---
+
+
+
 **Current app status** 
-![healthchecks.io](https://healthchecks.io/badge/14817298-6760-4320-b0dc-891814/m8LfYNGG-2.svg)
+
+![YOLO Ensemble App](https://healthchecks.io/b/2/56b02c9d-d5a4-4db8-9646-e1845dff1d0c.svg)
 
 
 ---
