@@ -12,7 +12,7 @@ To access the live version of the application, click the button below:
 
 ### 🔍 Test the App
 
-To test the system use this sample to test the system
+To test the system use this sample:
 
 [![Use Sample Image](https://img.shields.io/badge/use-sample_image-blue)](https://raw.githubusercontent.com/T4t00N/P4-Concept-drift/develop/misc/sample_image.jpg)
 
