@@ -10,6 +10,10 @@ To access the live version of the application, click the button below:
   </a>
 </div>
 
+**Current app status** 
+![healthchecks.io](https://healthchecks.io/badge/14817298-6760-4320-b0dc-891814/m8LfYNGG-2.svg)
+
+
 ---
 
 ### Badges
