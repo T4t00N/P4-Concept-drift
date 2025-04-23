@@ -1,6 +1,6 @@
 # P4-Concept-drift
 
-🚀 **Run the Application** 
+### 🚀 run the application
 
 To access the live version of the application, click the button below:
 
@@ -20,15 +20,15 @@ To test the system use this sample to test the system
 ---
 
 
+### 🟢 Current app status using healthchecks.io
 
-**🟢 Current app status using healthchecks.io** 
 
 ![YOLO Ensemble App](https://healthchecks.io/b/2/56b02c9d-d5a4-4db8-9646-e1845dff1d0c.svg)
 
 
 ---
 
-### Badges
+### 🏷️ Badges
 
 <p>
   <a href="https://github.com/T4t00N/P4-Concept-drift/graphs/contributors">
