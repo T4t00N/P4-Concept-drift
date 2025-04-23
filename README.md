@@ -14,9 +14,11 @@ To access the live version of the application, click the button below:
 
 
 
-**Current app status** 
+**Current app status using healthchecks.io** 
 
 ![YOLO Ensemble App](https://healthchecks.io/b/2/56b02c9d-d5a4-4db8-9646-e1845dff1d0c.svg)
+
+
 
 
 ---
