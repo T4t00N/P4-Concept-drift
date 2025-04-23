@@ -72,6 +72,13 @@ async def _run_inference(img_bytes: bytes) -> Tuple[List, bytes]:
         executor, partial(predictor.predict, img_bytes)
     )
 
+@app.get("/healthz")
+async def healthz():
+    if predictor is None:
+        return JSONResponse(status_code=503, content={"status": "loading"})
+    return {"status": "ok"}
+
+
 @app.post("/predict")
 async def predict(file: UploadFile = File(...), json: bool = False):
     if predictor is None:  # should never happen
