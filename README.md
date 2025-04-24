@@ -48,3 +48,23 @@ To test the system use this sample:
 <div align="center"> 
   <img src="misc/baseline_architecture.png" alt="Architecture Diagram" />
 </div>
+
+### How to Run locally
+
+#### 🔍 Inference
+
+1. Clone the Repository
+2. [🔗 Download Model Weights (Google Drive)](https://drive.google.com/drive/folders/1mR-DiDxA7CC1Mu2gM2lwZeQgVvG9_s37?usp=drive_link)
+3. Place the weights in the following folder structure within the program directory:
+```plaintext
+program
+└── weights
+    ├── yolo_checkpoints
+    │   └── epoch_2.pt
+    └── MoCo_checkpoints
+        └── moco_epoch_100.pt
+```
+4. Update paths
+5. Run Inference
+
+
