@@ -77,6 +77,7 @@ def compute_weighted_loss(
     # ---------------- 2. Soft weights -------------------------------------
     logits = mlp(feats)                # (B, 3)
     weights = torch.softmax(logits / temperature, dim=1)
+    print("weights", weights)
 
     # ---------------- 3. YOLO losses --------------------------------------
     loss_list = [criterion(model(images), targets) for model in yolo_models]
