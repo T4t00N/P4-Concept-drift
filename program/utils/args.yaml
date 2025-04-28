@@ -8,7 +8,7 @@ train_list: /ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Data
 # (Optional) override for the label‑cache location.  Feel free to
 # delete this line if you stick with the hard‑coded default in
 # utils/dataset.py
-cache_dir: /ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset/cache
+cache_dir: /ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset/filtered_cache
 
 # ------------------------------------------------------------------
 # Training settings
@@ -49,7 +49,3 @@ mix_up:    0.0
 names:
   0: background
   1: person
-  2: bicycle
-  3: car
-  4: gay
-  5: sex
