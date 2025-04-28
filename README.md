@@ -59,9 +59,8 @@ To test the system use this sample:
 ```plaintext
 program
 └── weights
-    ├── yolo_checkpoints
-    │   └── epoch_2.pt
-    └── MoCo_checkpoints
+    └── checkpoints
+        └── epoch_2.pt
         └── moco_epoch_100.pt
 ```
 4. Update paths
