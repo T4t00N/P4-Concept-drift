@@ -184,7 +184,14 @@ def train(args, params):
 
 @torch.no_grad()
 def test(args, params, model=None):
-    filenames = images_in_cluster(args.cluster_csv, args.val_cluster_label)
+    if args.use_original_val:
+        filenames = []
+        path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset"
+        with open(f'{path}/val_name.txt') as reader:
+            for fp in reader.readlines():
+                filenames.append(fp.strip())
+    else:
+        filenames = images_in_cluster(args.cluster_csv, args.val_cluster_label)
 
     # Create Dataset
     dataset = Dataset(filenames, args.input_size, params, augment=False)
@@ -347,7 +354,9 @@ def test(args, params, model=None):
 def main():
     print("Starting main function")
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cluster-csv', default='moco_clusters.csv')
+    parser.add_argument('--use-original-val', action='store_true',
+                        help='Validate on the legacy val_name.txt instead of a cluster')
+    parser.add_argument('--cluster-csv', default='utils/moco_clusters.csv')
     parser.add_argument('--cluster-label', type=int, default=0,
                         help='cluster to use for training')
     parser.add_argument('--val-cluster-label', type=int, default=1,
