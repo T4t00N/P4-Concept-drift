@@ -165,10 +165,11 @@ def train(args, params):
 
             # Validation
             last = None
-            VAL_INTERVAL = 2  # validate every 5 epochs
+            VAL_INTERVAL = 1  # validate every 5 epochs
 
             if (epoch + 1) % VAL_INTERVAL == 0 and not args.no_test:
-                last = test(args, params, ema.ema)  # ← every rank now runs this
+                eval_model = ema.ema if ema else model  # ← new
+                last = test(args, params, eval_model) # ← every rank now runs this
 
             # best-mAP bookkeeping only on rank-0
             if args.local_rank == 0 and last is not None and last[1] > best:
