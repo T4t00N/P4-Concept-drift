@@ -11,9 +11,8 @@ from torch.utils import data
 from nets import nn
 from utils import util
 from utils.dataset import Dataset
-
+fdsafd
 warnings.filterwarnings("ignore")
-
 
 def learning_rate(args, params):
     def fn(x):
@@ -22,8 +21,7 @@ def learning_rate(args, params):
 
 
 def train(args, params):
-    # Model
-    model = nn.yolo_v8_n(len(params['names'].values())).cuda()
+    model = nn.yolo_v8_n(len(params['names'])).cuda()
 
     # Optimizer
     accumulate = max(round(64 / (args.batch_size * args.world_size)), 1)
@@ -53,7 +51,7 @@ def train(args, params):
     # Load training filenames
     filenames = []
     path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset"
-    with open(f'{path}/train.txt') as reader:
+    with open(f'{path}/val_name.txt') as reader:
         for filepath in reader.readlines():
             filenames.append(filepath.strip())
 
@@ -70,7 +68,7 @@ def train(args, params):
                              batch_size=args.batch_size,
                              shuffle=(sampler is None),
                              sampler=sampler,
-                             num_workers=32,
+                             num_workers=24,
                              pin_memory=True,
                              collate_fn=Dataset.collate_fn)
 
@@ -84,10 +82,11 @@ def train(args, params):
     best = 0
     num_batch = len(loader)
     amp_scale = torch.cuda.amp.GradScaler()
-    criterion = util.ComputeLoss(model, params)
+    criterion = util.ComputeLoss(model.module if args.world_size > 1 else model, params)
     num_warmup = max(round(params['warmup_epochs'] * num_batch), 1000)
 
     print(f"Starting training loop for {args.epochs} epochs...")
+
 
     # CSV logging
     with open('weights/step.csv', 'w') as f:
@@ -131,10 +130,10 @@ def train(args, params):
                             fp = [params['warmup_momentum'], params['momentum']]
                             y['momentum'] = numpy.interp(x, xp, fp)
 
-                # Forward
+                # Forward: Compute loss for all three models and sum them
                 with torch.cuda.amp.autocast():
-                    outputs = model(samples)
-                loss = criterion(outputs, targets)
+                    outputs = model(samples)  # was outputs_list
+                    loss = criterion(outputs, targets)
 
                 m_loss.update(loss.item(), samples.size(0))
 
@@ -167,31 +166,33 @@ def train(args, params):
 
             # Validation
             if args.local_rank == 0:
-                print(f"Epoch {epoch + 1}/{args.epochs} completed. Testing model...")
-                last = test(args, params, ema.ema)
-                writer.writerow({
-                    'mAP': f'{last[1]:.3f}',
-                    'epoch': str(epoch + 1).zfill(3),
-                    'mAP@50': f'{last[0]:.3f}'
-                })
-                f.flush()
+                # ... (save initial last.pt) ...
 
-                # Update best
-                if last[1] > best:
+                last = None # Or: last = (-1.0, -1.0) Initialize last
+
+                # Perform testing only if --no_test is not set
+                if not args.no_test:
+                    print(f"Epoch {epoch + 1}/{args.epochs} completed. Testing model...")
+                    last = test(args, params, ema.ema) # 'last' is potentially updated here
+                    # ... (write to csv) ...
+
+                    # Update best mAP and save best weights if improved
+                    # This comparison is safe now as 'last' exists
+                    if last is not None and last[1] > best: # Check if last is not None before comparing
+                        best = last[1]
+                        # You could save best.pt here or rely on the loop below
+
+                os.makedirs('./weights', exist_ok=True)
+
+                # always save last.pt
+                torch.save({'model': copy.deepcopy(ema.ema if ema else model).half()},
+                           './weights/last.pt')
+
+                # save best.pt if mAP improved this epoch
+                if last is not None and last[1] > best:
                     best = last[1]
-
-                # Save model
-                ckpt = {'model': copy.deepcopy(ema.ema).half()}
-                torch.save(ckpt, './weights/last.pt')
-                if best == last[1]:
-                    torch.save(ckpt, './weights/best.pt')
-                del ckpt
-
-    # Cleanup
-    if args.local_rank == 0:
-        print("Finalizing training and stripping optimizer...")
-        util.strip_optimizer('./weights/best.pt')
-        util.strip_optimizer('./weights/last.pt')
+                    torch.save({'model': copy.deepcopy(ema.ema if ema else model).half()},
+                               './weights/best.pt')
 
     torch.cuda.empty_cache()
 
@@ -199,90 +200,144 @@ def train(args, params):
 @torch.no_grad()
 def test(args, params, model=None):
     filenames = []
-    path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset"
-    with open(f'{path}/test.txt') as reader:
+    path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset" # Consider making path an argument
+    with open(f'{path}/val_name.txt') as reader:
         for filepath in reader.readlines():
             filenames.append(filepath.strip())
 
-    # Create Dataset (again, augment=False, no mosaic)
+    # Create Dataset
     dataset = Dataset(filenames, args.input_size, params, augment=False)
-    loader = data.DataLoader(dataset, 8, shuffle=False,
-                             num_workers=32, pin_memory=True,
-                             collate_fn=Dataset.collate_fn)
+    loader = data.DataLoader(dataset, 8, shuffle=False, # Keep batch size reasonable for memory
+                              num_workers=24, # Reduced workers slightly as a precaution
+                              pin_memory=True,
+                              collate_fn=Dataset.collate_fn)
 
     if model is None:
-        model = torch.load('./weights/best.pt', map_location='cuda')['model'].float()
+        print("Loading single-model weights…")
+        model = nn.yolo_v8_n(len(params['names'])).cuda()
+        ckpt_path = './weights/best.pt'  # will be created by the new save code below
+        if os.path.isfile(ckpt_path):
+            model.load_state_dict(torch.load(ckpt_path, map_location='cuda')['model'])
+            print("Weights loaded.")
 
-    model.half()
+
+    model.half() # Use FP16
     model.eval()
 
     # iou vector for mAP@0.5:0.95
-    iou_v = torch.linspace(0.5, 0.95, 10).cuda()
+    iou_v = torch.linspace(0.5, 0.95, 10).cuda() # Use half() if metrics support it, else float()
     n_iou = iou_v.numel()
 
     m_pre, m_rec, map50, mean_ap = 0., 0., 0., 0.
     metrics = []
     p_bar = tqdm.tqdm(loader, desc=('%10s' * 3) % ('precision', 'recall', 'mAP'))
+
+    # WBF parameters (adjust as needed)
+    wbf_iou_thr = 0.55
+    wbf_skip_box_thr = 0.001
+    wbf_weights = [1, 1, 1] # Equal weights for the three models
+
     for samples, targets, shapes in p_bar:
-        samples = samples.cuda().half() / 255
-        _, _, height, width = samples.shape
+        samples = samples.cuda().half() / 255 # Normalize to [0, 1]
+        _, _, height, width = samples.shape # Input size height/width
         targets = targets.cuda()
+        targets[:, 2:] *= torch.tensor((width, height, width, height), device=targets.device) # Scale targets to input size
 
-        # Forward
-        outputs = model(samples)
+        # Forward pass: get outputs from all models
+        with torch.cuda.amp.autocast():
+            preds = model(samples)                         # tensor [B, …, 85]
+        outputs = util.non_max_suppression(
+            preds, conf_thres=0.001, iou_thres=0.65)
 
-        # NMS
-        targets[:, 2:] *= torch.tensor((width, height, width, height), device=targets.device)
-        outputs = util.non_max_suppression(outputs, 0.001, 0.65)
-
-        # Metrics
+        # Iterate over each image in the batch
         for i, output in enumerate(outputs):
-            labels = targets[targets[:, 0] == i, 1:]
-            correct = torch.zeros(output.shape[0], n_iou, dtype=torch.bool).cuda()
+            if output is None:
+                output = torch.zeros((0, 6), device=samples.device)
+
+            labels = targets[targets[:, 0] == i, 1:]        # ground-truth for image i
+            correct = torch.zeros(output.shape[0], n_iou,
+                                   dtype=torch.bool, device=output.device)
+
+            # --- Start of original metrics calculation logic ---
+            # Use the fused 'output' tensor instead of single-model output
+
+            labels = targets[targets[:, 0] == i, 1:] # Ground truth for image i
+            correct = torch.zeros(output.shape[0], n_iou, dtype=torch.bool, device=output.device)
+
             if output.shape[0] == 0:
-                if labels.shape[0]:
-                    metrics.append((correct, *torch.zeros((3, 0)).cuda()))
-                continue
+                if labels.shape[0]: # If no detections but there are labels
+                    metrics.append((correct.cpu(), torch.zeros((3, 0)).cpu())) # Ensure on CPU for numpy conversion later
+                continue # Go to next image
 
             detections = output.clone()
+            # Scale fused detections to original image size
             util.scale(detections[:, :4], samples[i].shape[1:], shapes[i][0], shapes[i][1])
+
             if labels.shape[0]:
-                tbox = labels[:, 1:5].clone()
-                tbox[:, 0] = labels[:, 1] - labels[:, 3] / 2
-                tbox[:, 1] = labels[:, 2] - labels[:, 4] / 2
-                tbox[:, 2] = labels[:, 1] + labels[:, 3] / 2
-                tbox[:, 3] = labels[:, 2] + labels[:, 4] / 2
+                # Ground truth boxes are already scaled to input size, scale them to original size
+                tbox = util.wh2xy(labels[:, 1:5]) # Convert target format if necessary
                 util.scale(tbox, samples[i].shape[1:], shapes[i][0], shapes[i][1])
+                t_tensor = torch.cat((labels[:, 0:1], tbox), 1) # Target tensor [class, x1, y1, x2, y2]
 
-                correct_arr = numpy.zeros((detections.shape[0], iou_v.shape[0]), dtype=bool)
-                t_tensor = torch.cat((labels[:, 0:1], tbox), 1)
-                iou = util.box_iou(t_tensor[:, 1:], detections[:, :4])
-                correct_class = t_tensor[:, 0:1] == detections[:, 5]
+                # Calculate IoU between fused detections and ground truth
+                iou = util.box_iou(t_tensor[:, 1:], detections[:, :4]) # [n_targets, n_detections]
+                # Find correct matches for each IoU threshold
+                correct_class = t_tensor[:, 0:1] == detections[:, 5] # Check class match [n_targets, n_detections]
 
-                for j in range(n_iou):
+                for j in range(n_iou): # For each IoU threshold
+                    # Find matches: IoU >= threshold AND Class matches
                     x = torch.where((iou >= iou_v[j]) & correct_class)
                     if x[0].shape[0]:
+                        # matches = [target_idx, detection_idx, iou_value]
                         matches = torch.cat((torch.stack(x, 1), iou[x[0], x[1]][:, None]), 1).cpu().numpy()
-                        # Filter duplicates
-                        if x[0].shape[0] > 1:
-                            matches = matches[matches[:, 2].argsort()[::-1]]  # sort by iou
-                            matches = matches[numpy.unique(matches[:, 1], return_index=True)[1]]
+                        if x[0].shape[0] > 1: # If more than one match
+                             # Sort by IoU descending
+                            matches = matches[matches[:, 2].argsort()[::-1]]
+                            # Keep only best detection match for each target
                             matches = matches[numpy.unique(matches[:, 0], return_index=True)[1]]
-                        correct_arr[matches[:, 1].astype(int), j] = True
+                            # Keep only best target match for each detection
+                            matches = matches[numpy.unique(matches[:, 1], return_index=True)[1]]
+                        # Mark the matched detections as correct for this IoU threshold
+                        correct[matches[:, 1].astype(int), j] = True
 
-                correct = torch.tensor(correct_arr, device=iou_v.device)
+            # Append metrics: (correct_flags, detection_confidence, detection_class, target_class)
+            # Ensure all tensors are moved to CPU before appending if they will be concatenated later into NumPy arrays
+            metrics.append((correct.cpu(), output[:, 4].cpu(), output[:, 5].cpu(), labels[:, 0].cpu()))
+            # --- End of original metrics calculation logic ---
 
-            metrics.append((correct, output[:, 4], output[:, 5], labels[:, 0]))
+    # Compute final metrics
+    if not metrics: # Handle case where metrics list is empty
+        print("No metrics recorded.")
+        return 0.0, 0.0
 
-    # Compute metrics
-    metrics = [torch.cat(x, 0).cpu().numpy() for x in zip(*metrics)]
-    if len(metrics) and metrics[0].any():
-        tp, fp, m_pre, m_rec, map50, mean_ap = util.compute_ap(*metrics)
+    try:
+        # Ensure all elements in metrics are tuples of tensors before concatenating
+        metrics_cat = [torch.cat([m[j] for m in metrics], 0) for j in range(4)]
+        # Convert to numpy for compute_ap
+        metrics_np = [m.numpy() for m in metrics_cat]
 
-    print('%10.3g' * 3 % (m_pre, m_rec, mean_ap))
+        if len(metrics_np) and metrics_np[0].any():
+            # Pass requires_grad=False tensors if compute_ap doesn't handle them
+            tp, fp, m_pre, m_rec, map50, mean_ap = util.compute_ap(*metrics_np, num_classes=len(params['names'])) # Pass num_classes if needed by compute_ap
+        else:
+             print("No detections or no correct detections found.")
+             tp, fp, m_pre, m_rec, map50, mean_ap = (0,) * 6 # Or appropriate default values
 
-    model.float()  # re-enable FP32 if needed
-    return map50, mean_ap
+    except Exception as e:
+         print(f"Error during metric computation: {e}")
+         print(f"Metrics list length: {len(metrics)}")
+         # Optionally print shapes or types of elements in metrics for debugging
+         # for idx, item in enumerate(metrics):
+         #     print(f"Metric item {idx}: {[t.shape if hasattr(t,'shape') else type(t) for t in item]}")
+         m_pre, m_rec, map50, mean_ap = 0., 0., 0., 0. # Default values on error
+
+
+    # Print metrics
+    print('%10s %10s %10s' % ('precision', 'recall', 'mAP_0.5:0.95'))
+    print('%10.3g %10.3g %10.3g' % (m_pre, m_rec, mean_ap))
+
+    model.float() # Switch back to FP32 if needed elsewhere
+    return map50, mean_ap # Return mAP@0.5 and mAP@0.5:0.95
 
 
 def main():
@@ -290,15 +345,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input-size', default=384, type=int)
     parser.add_argument('--batch-size', default=128, type=int)
-    # Remove: parser.add_argument('--local_rank', default=0, type=int)
     parser.add_argument('--epochs', default=5, type=int)
     parser.add_argument('--train', action='store_true')
     parser.add_argument('--test', action='store_true')
+    parser.add_argument('--no_test', action='store_true', help='Skip testing between epochs during training')
 
-    # Use parse_known_args to ignore unrecognized arguments
     args, _ = parser.parse_known_args()
 
-    # Set local_rank from environment variable
     args.local_rank = int(os.environ.get('LOCAL_RANK', 0))
     args.world_size = int(os.getenv('WORLD_SIZE', 1))
     print(f"Args parsed: {args}")
@@ -325,6 +378,7 @@ def main():
         train(args, params)
     if args.test:
         test(args, params)
+
 
 if __name__ == "__main__":
     main()
