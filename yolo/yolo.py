@@ -11,7 +11,6 @@ from torch.utils import data
 from nets import nn
 from utils import util
 from utils.dataset import Dataset
-fdsafd
 warnings.filterwarnings("ignore")
 
 def learning_rate(args, params):
@@ -51,7 +50,7 @@ def train(args, params):
     # Load training filenames
     filenames = []
     path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset"
-    with open(f'{path}/val_name.txt') as reader:
+    with open(f'{path}/train_name.txt') as reader:
         for filepath in reader.readlines():
             filenames.append(filepath.strip())
 
@@ -68,7 +67,7 @@ def train(args, params):
                              batch_size=args.batch_size,
                              shuffle=(sampler is None),
                              sampler=sampler,
-                             num_workers=24,
+                             num_workers=16,
                              pin_memory=True,
                              collate_fn=Dataset.collate_fn)
 
@@ -165,32 +164,21 @@ def train(args, params):
             scheduler.step()
 
             # Validation
+            last = None
+            VAL_INTERVAL = 2  # validate every 5 epochs
+
+            if (epoch + 1) % VAL_INTERVAL == 0 and not args.no_test:
+                last = test(args, params, ema.ema)  # ← every rank now runs this
+
+            # best-mAP bookkeeping only on rank-0
+            if args.local_rank == 0 and last is not None and last[1] > best:
+                best = last[1]
+
             if args.local_rank == 0:
-                # ... (save initial last.pt) ...
-
-                last = None # Or: last = (-1.0, -1.0) Initialize last
-
-                # Perform testing only if --no_test is not set
-                if not args.no_test:
-                    print(f"Epoch {epoch + 1}/{args.epochs} completed. Testing model...")
-                    last = test(args, params, ema.ema) # 'last' is potentially updated here
-                    # ... (write to csv) ...
-
-                    # Update best mAP and save best weights if improved
-                    # This comparison is safe now as 'last' exists
-                    if last is not None and last[1] > best: # Check if last is not None before comparing
-                        best = last[1]
-                        # You could save best.pt here or rely on the loop below
-
                 os.makedirs('./weights', exist_ok=True)
-
-                # always save last.pt
                 torch.save({'model': copy.deepcopy(ema.ema if ema else model).half()},
                            './weights/last.pt')
-
-                # save best.pt if mAP improved this epoch
-                if last is not None and last[1] > best:
-                    best = last[1]
+                if last is not None and last[1] >= best:
                     torch.save({'model': copy.deepcopy(ema.ema if ema else model).half()},
                                './weights/best.pt')
 
@@ -207,10 +195,21 @@ def test(args, params, model=None):
 
     # Create Dataset
     dataset = Dataset(filenames, args.input_size, params, augment=False)
-    loader = data.DataLoader(dataset, 8, shuffle=False, # Keep batch size reasonable for memory
-                              num_workers=24, # Reduced workers slightly as a precaution
-                              pin_memory=True,
-                              collate_fn=Dataset.collate_fn)
+
+    # NEW: shard val set across GPUs
+    if args.world_size > 1:
+        val_sampler = data.distributed.DistributedSampler(dataset,
+                                                          shuffle=False)
+    else:
+        val_sampler = None
+
+    loader = data.DataLoader(dataset,
+                             batch_size=max(1, args.batch_size // args.world_size),
+                             sampler=val_sampler,
+                             shuffle=(val_sampler is None),
+                             num_workers=16,
+                             pin_memory=True,
+                             collate_fn=Dataset.collate_fn)
 
     if model is None:
         print("Loading single-model weights…")
@@ -247,7 +246,7 @@ def test(args, params, model=None):
         with torch.cuda.amp.autocast():
             preds = model(samples)                         # tensor [B, …, 85]
         outputs = util.non_max_suppression(
-            preds, conf_thres=0.001, iou_thres=0.65)
+            preds, 0.001, 0.65)
 
         # Iterate over each image in the batch
         for i, output in enumerate(outputs):
@@ -266,7 +265,12 @@ def test(args, params, model=None):
 
             if output.shape[0] == 0:
                 if labels.shape[0]: # If no detections but there are labels
-                    metrics.append((correct.cpu(), torch.zeros((3, 0)).cpu())) # Ensure on CPU for numpy conversion later
+                    metrics.append((
+                        correct.cpu(),  # (0, nIoU)
+                        torch.zeros(0).cpu(),  # confidences  (0,)
+                        torch.zeros(0, dtype=torch.float32).cpu(),  # pred classes (0,)
+                        labels[:, 0].cpu()  # gt classes   (nlabels,)
+                    ))# Ensure on CPU for numpy conversion later
                 continue # Go to next image
 
             detections = output.clone()
@@ -318,7 +322,7 @@ def test(args, params, model=None):
 
         if len(metrics_np) and metrics_np[0].any():
             # Pass requires_grad=False tensors if compute_ap doesn't handle them
-            tp, fp, m_pre, m_rec, map50, mean_ap = util.compute_ap(*metrics_np, num_classes=len(params['names'])) # Pass num_classes if needed by compute_ap
+            tp, fp, m_pre, m_rec, map50, mean_ap = util.compute_ap(*metrics_np) # Pass num_classes if needed by compute_ap
         else:
              print("No detections or no correct detections found.")
              tp, fp, m_pre, m_rec, map50, mean_ap = (0,) * 6 # Or appropriate default values
@@ -333,11 +337,18 @@ def test(args, params, model=None):
 
 
     # Print metrics
-    print('%10s %10s %10s' % ('precision', 'recall', 'mAP_0.5:0.95'))
-    print('%10.3g %10.3g %10.3g' % (m_pre, m_rec, mean_ap))
+    results = torch.tensor([map50, mean_ap], device='cuda')
+    if args.world_size > 1:
+        torch.distributed.all_reduce(results, op=torch.distributed.ReduceOp.SUM)
+        results /= args.world_size  # average across GPUs
 
-    model.float() # Switch back to FP32 if needed elsewhere
-    return map50, mean_ap # Return mAP@0.5 and mAP@0.5:0.95
+    # Only rank-0 prints
+    if args.local_rank == 0:
+        print('%10s %10s %10s' % ('precision', 'recall', 'mAP_0.5:0.95'))
+        print('%10.3g %10.3g %10.3g' % (m_pre, m_rec, results[1].item()))
+
+    model.float()
+    return results[0].item(), results[1].item()
 
 
 def main():
@@ -378,6 +389,8 @@ def main():
         train(args, params)
     if args.test:
         test(args, params)
+    if args.world_size > 1:
+        torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":
