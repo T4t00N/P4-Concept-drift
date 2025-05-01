@@ -79,7 +79,10 @@ class Dataset(data.Dataset):
         #print("Cache directory:", cache_dir)
         os.makedirs(cache_dir, exist_ok=True)
 
-        label_cache_path = os.path.join(cache_dir, 'val_label_cache.pt')
+        is_val_split = 'val' in filenames[0] or 'test' in filenames[0]
+        label_cache_path = os.path.join(
+            cache_dir,
+            'val_label_cache.pt' if is_val_split else 'train_label_cache.pt')
         #print("Cache path:", label_cache_path)
         # Build the path for the person-only label cache
         #person_cache_filename = f"{base_name}_person_label_cache.pt"
