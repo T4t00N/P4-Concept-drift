@@ -172,12 +172,12 @@ def train(args, params):
                 best = last[1]
 
             if args.local_rank == 0:
-                os.makedirs('./weights', exist_ok=True)
+                os.makedirs('./ym_weights', exist_ok=True)
                 torch.save({'model': copy.deepcopy(ema.ema if ema else model).half()},
-                           './weights/last.pt')
+                           './ym_weights/last_0).pt')
                 if last is not None and last[1] >= best:
                     torch.save({'model': copy.deepcopy(ema.ema if ema else model).half()},
-                               './weights/best.pt')
+                               './ym_weights/best_0.pt')
 
     torch.cuda.empty_cache()
 
