@@ -11,7 +11,9 @@ from torch.utils import data
 from nets import nn
 from utils import util
 from utils.dataset import Dataset
+from datetime import timedelta
 warnings.filterwarnings("ignore")
+
 
 def learning_rate(args, params):
     def fn(x):
@@ -321,12 +323,10 @@ def test(args, params, model=None):
         # Convert to numpy for compute_ap
         metrics_np = [m.numpy() for m in metrics_cat]
 
-        if len(metrics_np) and metrics_np[0].any():
-            # Pass requires_grad=False tensors if compute_ap doesn't handle them
-            tp, fp, m_pre, m_rec, map50, mean_ap = util.compute_ap(*metrics_np) # Pass num_classes if needed by compute_ap
+        if args.local_rank == 0:
+            tp, fp, m_pre, m_rec, map50, mean_ap = util.compute_ap(*metrics_np)
         else:
-             print("No detections or no correct detections found.")
-             tp, fp, m_pre, m_rec, map50, mean_ap = (0,) * 6 # Or appropriate default values
+            tp = fp = m_pre = m_rec = map50 = mean_ap = 0.0
 
     except Exception as e:
          print(f"Error during metric computation: {e}")
@@ -340,8 +340,7 @@ def test(args, params, model=None):
     # Print metrics
     results = torch.tensor([map50, mean_ap], device='cuda')
     if args.world_size > 1:
-        torch.distributed.all_reduce(results, op=torch.distributed.ReduceOp.SUM)
-        results /= args.world_size  # average across GPUs
+        torch.distributed.broadcast(results, src=0)
 
     # Only rank-0 prints
     if args.local_rank == 0:
@@ -374,7 +373,10 @@ def main():
         torch.cuda.set_device(device=args.local_rank % torch.cuda.device_count())
         print(f"Process {args.local_rank} using GPU {torch.cuda.current_device()} "
               f"out of {torch.cuda.device_count()} GPUs")
-        torch.distributed.init_process_group(backend='nccl', init_method='env://')
+        torch.distributed.init_process_group(
+            backend='nccl',
+            init_method='env://',
+            timeout=timedelta(minutes=60))
 
     if args.local_rank == 0:
         if not os.path.exists('weights'):
