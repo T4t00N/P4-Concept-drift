@@ -51,6 +51,9 @@ def train(args, params):
     # Load training filenames
     filenames = images_in_cluster(args.cluster_csv, args.cluster_label)
 
+    print(f"[INFO] Training cluster {args.cluster_label}: "
+          f"{len(filenames):,} unique images found in CSV.")
+
     # Create Dataset (pass augment=False because we removed augmentation logic)
     dataset = Dataset(filenames, args.input_size, params, augment=False)
 
@@ -174,10 +177,10 @@ def train(args, params):
             if args.local_rank == 0:
                 os.makedirs('./ym_weights', exist_ok=True)
                 torch.save({'model': copy.deepcopy(ema.ema if ema else model).half()},
-                           './ym_weights/last_0).pt')
+                           './ym_weights/last_2).pt')
                 if last is not None and last[1] >= best:
                     torch.save({'model': copy.deepcopy(ema.ema if ema else model).half()},
-                               './ym_weights/best_0.pt')
+                               './ym_weights/best_2.pt')
 
     torch.cuda.empty_cache()
 
@@ -364,7 +367,7 @@ def main():
     parser.add_argument('--input-size', default=384, type=int)
     parser.add_argument('--batch-size', default=128, type=int)
     parser.add_argument('--epochs', default=5, type=int)
-    parser.add_argument('--train', action='store_true')
+    parser.add_argument('--train',default=True, action='store_true')
     parser.add_argument('--test', action='store_true')
     parser.add_argument('--no_test', action='store_true', help='Skip testing between epochs during training')
 
