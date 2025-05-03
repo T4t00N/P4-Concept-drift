@@ -115,13 +115,12 @@ def wh2xy(x):
     return y
 
 
-def non_max_suppression(prediction, conf_threshold=0.25, iou_threshold=0.45):
+def non_max_suppression(prediction, conf_threshold=0.25, iou_threshold=0.45, max_det=30):
     nc = prediction.shape[1] - 4  # number of classes
     xc = prediction[:, 4:4 + nc].amax(1) > conf_threshold  # candidates
 
     # Settings
     max_wh = 7680  # (pixels) maximum box width and height
-    max_det = 300  # the maximum number of boxes to keep after NMS
     max_nms = 30000  # maximum number of boxes into torchvision.ops.nms()
 
     start = time.time()
@@ -404,6 +403,9 @@ class ComputeLoss:
         """
         self.bs = pred_scores.size(0)
         self.num_max_boxes = true_bboxes.size(1)
+
+        true_labels = true_labels.clone()
+        true_labels.clamp_(0, self.nc - 1)
 
         if self.num_max_boxes == 0:
             device = true_bboxes.device
