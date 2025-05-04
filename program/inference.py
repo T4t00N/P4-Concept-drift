@@ -213,10 +213,10 @@ def parse_args():
     p = argparse.ArgumentParser(
         description="Run inference on one image with MoCo➜MLP➜YOLO ensemble"
     )
-    p.add_argument("--image", default=r"C:\Users\anto3\Downloads\cluster_39_20210302930130818.jpg",
+    p.add_argument("--image", default="cluster_39_20210302930130818.jpg",
                    help="path to the input image")
-    p.add_argument("--weights", default=r"C:\Users\anto3\Documents\GitHub\P4-Concept-drift\program\weights\checkpoints\epoch_6.pt", help="ensemble checkpoint")
-    p.add_argument("--moco", default=r"C:\Users\anto3\Documents\GitHub\P4-Concept-drift\program\weights\checkpoints\moco_epoch_100.pt", help="MoCo checkpoint")
+    p.add_argument("--weights", default="weights/final.pt", help="ensemble checkpoint")
+    p.add_argument("--moco", default="/ceph/project/P4-concept-drift/YOLOv8-Anton/data/moco_epoch_100.pt", help="MoCo checkpoint")
     p.add_argument("--hyp", default="utils/args.yaml", help="yaml with class names")
     p.add_argument("--input-size", type=int, default=384)
     p.add_argument("--conf", type=float, default=0.25)
