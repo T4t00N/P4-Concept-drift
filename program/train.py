@@ -282,9 +282,24 @@ def train(args, hyp):
             wandb.save(str(save_path))
             print(f"Checkpoint saved at epoch {ep+1}")
 
-        # ---------------- wandb logging -----------------------------------
+        # ---------------- wandb logging with weight tracking -------------------
+        def get_model_params(model):
+            if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+                params = model.module.parameters()
+            else:
+                params = model.parameters()
+            return torch.cat([p.view(-1) for p in params]).cpu().detach().numpy()
+
         if rank == 0:
-            wandb.log({"epoch": ep + 1, "loss": avg.avg, "lr": sched.get_last_lr()[0]})
+            wandb.log({
+                "epoch": ep + 1,
+                "loss": avg.avg,
+                "lr": sched.get_last_lr()[0],
+                "mlp_weights": wandb.Histogram(get_model_params(mlp)),
+                "yolo0_weights": wandb.Histogram(get_model_params(yolos[0])),
+                "yolo1_weights": wandb.Histogram(get_model_params(yolos[1])),
+                "yolo2_weights": wandb.Histogram(get_model_params(yolos[2])),
+            })
 
     # ---------------- save final weights ----------------------------------------
     if rank == 0:
