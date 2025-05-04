@@ -10,7 +10,7 @@ import yaml
 from torch.utils import data
 from nets import nn
 from utils import util
-from utils.dataset2 import Dataset
+from utils.yolo_moco_dataset import Dataset
 from utils.cluster_utils import images_in_cluster
 warnings.filterwarnings("ignore")
 

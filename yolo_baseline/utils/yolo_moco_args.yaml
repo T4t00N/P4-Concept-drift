@@ -1,0 +1,51 @@
+# ------------------------------------------------------------------
+# I/O
+# ------------------------------------------------------------------
+# One image‑path per line, absolute or relative to the directory
+# you launch training from.
+train_list: /ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset/val_name.txt
+
+# (Optional) override for the label‑cache location.  Feel free to
+# delete this line if you stick with the hard‑coded default in
+# utils/dataset.py
+cache_dir: /ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset/val_label_cache.pt
+
+# ------------------------------------------------------------------
+# Training settings
+# ------------------------------------------------------------------
+lr0:            0.010
+lrf:            0.010
+momentum:       0.937
+weight_decay:   0.0005
+warmup_epochs:  3.0
+warmup_momentum: 0.8
+warmup_bias_lr: 0.10
+
+# ------------------------------------------------------------------
+# Loss gains
+# ------------------------------------------------------------------
+box: 7.5
+cls: 0.5
+dfl: 1.5
+
+# ------------------------------------------------------------------
+# Disable all augmentations
+# ------------------------------------------------------------------
+hsv_h:    0.0
+hsv_s:    0.0
+hsv_v:    0.0
+degrees:  0.0
+translate: 0.0
+scale:     0.0
+shear:     0.0
+flip_ud:   0.0
+flip_lr:   0.0
+mosaic:    0.0
+mix_up:    0.0
+
+# ------------------------------------------------------------------
+# Classes
+# ------------------------------------------------------------------
+names:
+  0: background
+  1: person
