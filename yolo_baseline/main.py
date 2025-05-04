@@ -165,22 +165,23 @@ def train(args, params):
             # Scheduler step
             scheduler.step()
 
-            # Validation
-            if args.local_rank == 0:
+            should_validate = ((epoch + 1) % 3 == 0) or (epoch + 1 == args.epochs)
+
+            if args.local_rank == 0 and should_validate:
                 print(f"Epoch {epoch + 1}/{args.epochs} completed. Testing model...")
                 last = test(args, params, ema.ema)
+
                 writer.writerow({
-                    'mAP': f'{last[1]:.3f}',
                     'epoch': str(epoch + 1).zfill(3),
-                    'mAP@50': f'{last[0]:.3f}'
+                    'mAP@50': f'{last[0]:.3f}',
+                    'mAP': f'{last[1]:.3f}',
                 })
                 f.flush()
 
-                # Update best
+                # Update best checkpoint
                 if last[1] > best:
                     best = last[1]
 
-                # Save model
                 ckpt = {'model': copy.deepcopy(ema.ema).half()}
                 torch.save(ckpt, './weights/last.pt')
                 if best == last[1]:
