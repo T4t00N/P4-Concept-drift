@@ -55,36 +55,71 @@ def init_yolos(num_classes: int, device: str):
     """Return three independent YOLO‑v8‑n models."""
     return [nn.yolo_v8_n(num_classes).to(device) for _ in range(3)]
 
+def load_yolo_weights(model: torch.nn.Module, ckpt_path: str, device: str):
+    """
+    Load a YOLO checkpoint, copying only the parameters whose shapes match.
+    This lets us reuse a 2‑class pretrained model in a 5‑class run.
+    """
+    obj = torch.load(ckpt_path, map_location=device)
+    if isinstance(obj, dict) and "model" in obj:
+        obj = obj["model"]
+    if isinstance(obj, torch.nn.Module):
+        obj = obj.state_dict()
+
+    if not isinstance(obj, dict):
+        raise TypeError(f"{ckpt_path}: unsupported checkpoint type {type(obj)}")
+
+    model_state = model.state_dict()
+    compatible = {k: v for k, v in obj.items()
+                  if k in model_state and v.shape == model_state[k].shape}
+    skipped = [k for k in obj.keys() if k not in compatible]
+
+    msg = model.load_state_dict(compatible, strict=False)
+    print(f"[YOLO] {os.path.basename(ckpt_path)} → "
+          f"copied {len(compatible):4d} tensors, skipped {len(skipped):2d} (shape mismatch)")
+
 # ----------------------------------------------------------------------------------
 # 2. loss wrapper ------------------------------------------------------------------
 # ----------------------------------------------------------------------------------
 
+FREEZE_GATE_EPOCHS = 3
+
 def compute_weighted_loss(
     moco_model: torch.nn.Module,
     mlp: torch.nn.Module,
-    yolo_models: list,
-    images: torch.Tensor,  # B×1×H×W in this project
+    yolo_models: list[torch.nn.Module],
+    images: torch.Tensor,
     targets: torch.Tensor,
     criterion,
-    temperature: float = 0.1,
+    temperature: float = 2.0,
+    ent_weight: float = 0.1,
 ):
-    """Compute ensemble loss with differentiable MoCo‑driven weighting."""
-    # ---------------- 1. MoCo features ------------------------------------
+    """
+    MoCo → MLP → soft weights → weighted YOLO loss
+    Adds an entropy term –λ·H(w) – to stop collapse.
+    Uses average weights to combine total losses from each expert.
+    """
+    # 1. Features
     with torch.no_grad():
         img3 = images.expand(-1, 3, -1, -1) if images.shape[1] == 1 else images
-        _, feats = moco_model(img3)  # (B, 128)
+        _, feats = moco_model(img3)          # (B, 128)
 
-    # ---------------- 2. Soft weights -------------------------------------
-    logits = mlp(feats)                # (B, 3)
-    weights = torch.softmax(logits / temperature, dim=1)
-    print("weights", weights)
+    # 2. Gating weights
+    logits = mlp(feats)                      # (B, 3)
+    weights = torch.softmax(logits / temperature, dim=1)  # (B, 3)
+    print(weights)
 
-    # ---------------- 3. YOLO losses --------------------------------------
-    loss_list = [criterion(model(images), targets) for model in yolo_models]
-    losses = torch.stack(loss_list)     # (3,)
+    # 3. Expert losses (each a scalar for the batch)
+    losses = torch.stack([criterion(m(images), targets) for m in yolo_models])  # (3,)
 
-    weighted = (weights * losses).sum(dim=1).mean()
-    return weighted
+    # 4. Main loss: weight total losses by average weights
+    avg_weights = weights.mean(0)  # (3,), average weight per expert across batch
+    main_loss = (avg_weights * losses).sum()  # scalar
+
+    # 5. Entropy bonus H(w) = –Σ w log w (batch mean)
+    entropy = -(weights * (weights + 1e-8).log()).sum(1).mean()
+
+    return main_loss - ent_weight * entropy
 
 # ----------------------------------------------------------------------------------
 # 3. LR schedule helper ------------------------------------------------------------
@@ -136,6 +171,15 @@ def train(args, hyp):
     mlp = init_mlp(device=device)
     yolos = init_yolos(num_classes=len(hyp["names"]), device=device)
 
+    # ➜ load the three MoCo‑pretrained YOLO checkpoints
+    ckpt_paths = [
+        "ym_weights/last_0.pt",
+        "ym_weights/last_1.pt",
+        "ym_weights/last_2.pt",
+    ]
+    for model, ck in zip(yolos, ckpt_paths):
+        load_yolo_weights(model, ck, device)
+
     criterion = util.ComputeLoss(yolos[0], hyp)
 
     # ---------------- DDP --------------------------------------------------
@@ -158,7 +202,6 @@ def train(args, hyp):
         scaler = torch.amp.GradScaler(enabled=False)
         autocast = nullcontext
 
-    util.setup_seed()
     util.setup_multi_processes()
 
     # Define save_model function to handle saving state dictionaries
@@ -180,6 +223,14 @@ def train(args, hyp):
         if sampler:
             sampler.set_epoch(ep)
         mlp.train(); [y.train() for y in yolos]
+        if ep < FREEZE_GATE_EPOCHS:
+            mlp.eval()
+            for p in mlp.parameters():
+                p.requires_grad_(False)
+        else:
+            mlp.train()
+            for p in mlp.parameters():
+                p.requires_grad_(True)
 
         pbar = tqdm.tqdm(enumerate(dl), total=num_batches, disable=(rank != 0), desc=f"Epoch {ep+1}/{args.epochs}")
         avg = util.AverageMeter()
@@ -209,6 +260,10 @@ def train(args, hyp):
                 util.clip_gradients(mlp)
                 [util.clip_gradients(y) for y in yolos]
                 scaler.step(opt)
+                # Clamp MLP weights to be at least 0.1
+                with torch.no_grad():
+                    for p in mlp.parameters():
+                        p.clamp_(min=0.1)
                 scaler.update()
                 opt.zero_grad(set_to_none=True)
 
@@ -227,9 +282,24 @@ def train(args, hyp):
             wandb.save(str(save_path))
             print(f"Checkpoint saved at epoch {ep+1}")
 
-        # ---------------- wandb logging -----------------------------------
+        # ---------------- wandb logging with weight tracking -------------------
+        def get_model_params(model):
+            if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+                params = model.module.parameters()
+            else:
+                params = model.parameters()
+            return torch.cat([p.view(-1) for p in params]).cpu().detach().numpy()
+
         if rank == 0:
-            wandb.log({"epoch": ep + 1, "loss": avg.avg, "lr": sched.get_last_lr()[0]})
+            wandb.log({
+                "epoch": ep + 1,
+                "loss": avg.avg,
+                "lr": sched.get_last_lr()[0],
+                "mlp_weights": wandb.Histogram(get_model_params(mlp)),
+                "yolo0_weights": wandb.Histogram(get_model_params(yolos[0])),
+                "yolo1_weights": wandb.Histogram(get_model_params(yolos[1])),
+                "yolo2_weights": wandb.Histogram(get_model_params(yolos[2])),
+            })
 
     # ---------------- save final weights ----------------------------------------
     if rank == 0:
@@ -249,10 +319,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-size", type=int, default=384)
     parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--train", action="store_true", default=True)
     parser.add_argument("--local_rank", type=int, default=int(os.getenv("LOCAL_RANK", 0)))
     parser.add_argument("--world_size", type=int, default=int(os.getenv("WORLD_SIZE", 1)))
+    parser.add_argument(
+        "--yolo_ckpts",
+        nargs=3,
+        metavar=("CKPT0", "CKPT1", "CKPT2"),
+        default=["ym_weights/last_0.pt",
+                 "ym_weights/last_1.pt",
+                 "ym_weights/last_2.pt"],
+        help="paths to the three MoCo‑pretrained YOLO checkpoints",
+    )
     args, _ = parser.parse_known_args()
 
     args.device = "cuda" if torch.cuda.is_available() else "cpu"

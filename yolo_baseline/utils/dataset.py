@@ -75,7 +75,7 @@ class Dataset(data.Dataset):
     @staticmethod
     def load_label(filenames, person_only=False):
         # Setup cache directory
-        cache_dir = "/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset/cache"
+        cache_dir = "/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset/filtered_cache"
         print("Cache directory:", cache_dir)
         os.makedirs(cache_dir, exist_ok=True)
 
@@ -89,9 +89,9 @@ class Dataset(data.Dataset):
         print("Cache path:", label_cache_path)
 
         # Build the path for the person-only label cache
-        person_cache_filename = f"{base_name}_person_label_cache.pt"
-        person_cache_path = os.path.join(cache_dir, person_cache_filename)
-        print("Person cache path:", person_cache_path)
+        #person_cache_filename = f"{base_name}_person_label_cache.pt"
+        #person_cache_path = os.path.join(cache_dir, person_cache_filename)
+        #print("Person cache path:", person_cache_path)
 
         # If the label cache already exists, load it
         if os.path.exists(label_cache_path):

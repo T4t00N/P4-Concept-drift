@@ -5,4 +5,5 @@
 data/
 wandb/
 __pycache__/
+/yolo_baseline/weights/
 
