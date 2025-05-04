@@ -78,11 +78,13 @@ def load_yolo_weights(model: torch.nn.Module, ckpt_path: str, device: str):
     print(f"[YOLO] {os.path.basename(ckpt_path)} → "
           f"copied {len(compatible):4d} tensors, skipped {len(skipped):2d} (shape mismatch)")
 
+
 # ----------------------------------------------------------------------------------
 # 2. loss wrapper ------------------------------------------------------------------
 # ----------------------------------------------------------------------------------
 
 FREEZE_GATE_EPOCHS = 3
+
 
 def compute_weighted_loss(
     moco_model: torch.nn.Module,
@@ -105,9 +107,19 @@ def compute_weighted_loss(
         _, feats = moco_model(img3)          # (B, 128)
 
     # 2. Gating weights
-    logits = mlp(feats)                      # (B, 3)
+    logits = mlp(feats)  # (B, 3)
     weights = torch.softmax(logits / temperature, dim=1)  # (B, 3)
-    print(weights)
+
+    # ── FIXED: affine transformation that guarantees w ≥ 0.2 and Σw = 1 ───────
+    min_w = 0.2  # lower bound
+    n_exp = weights.size(1)  # number of experts (3)
+    assert min_w * n_exp < 1.0, "min_w too large for this many experts"
+
+    weights = weights * (1.0 - n_exp * min_w) + min_w  # (B, 3)
+    # --------------------------------------------------------------------------
+
+    if torch.distributed.get_rank() == 0:
+        print(f"Batch average weights: {weights.mean(dim=0).cpu().detach().numpy().round(3)}")
 
     # 3. Expert losses (each a scalar for the batch)
     losses = torch.stack([criterion(m(images), targets) for m in yolo_models])  # (3,)
@@ -171,7 +183,7 @@ def train(args, hyp):
     mlp = init_mlp(device=device)
     yolos = init_yolos(num_classes=len(hyp["names"]), device=device)
 
-    # ➜ load the three MoCo‑pretrained YOLO checkpoints
+    # ➜ load the three MoCo‑pretrained YOLO checkpoints
     ckpt_paths = [
         "ym_weights/last_0.pt",
         "ym_weights/last_1.pt",
@@ -260,10 +272,6 @@ def train(args, hyp):
                 util.clip_gradients(mlp)
                 [util.clip_gradients(y) for y in yolos]
                 scaler.step(opt)
-                # Clamp MLP weights to be at least 0.1
-                with torch.no_grad():
-                    for p in mlp.parameters():
-                        p.clamp_(min=0.1)
                 scaler.update()
                 opt.zero_grad(set_to_none=True)
 
@@ -282,24 +290,9 @@ def train(args, hyp):
             wandb.save(str(save_path))
             print(f"Checkpoint saved at epoch {ep+1}")
 
-        # ---------------- wandb logging with weight tracking -------------------
-        def get_model_params(model):
-            if isinstance(model, torch.nn.parallel.DistributedDataParallel):
-                params = model.module.parameters()
-            else:
-                params = model.parameters()
-            return torch.cat([p.view(-1) for p in params]).cpu().detach().numpy()
-
+        # ---------------- wandb logging -----------------------------------
         if rank == 0:
-            wandb.log({
-                "epoch": ep + 1,
-                "loss": avg.avg,
-                "lr": sched.get_last_lr()[0],
-                "mlp_weights": wandb.Histogram(get_model_params(mlp)),
-                "yolo0_weights": wandb.Histogram(get_model_params(yolos[0])),
-                "yolo1_weights": wandb.Histogram(get_model_params(yolos[1])),
-                "yolo2_weights": wandb.Histogram(get_model_params(yolos[2])),
-            })
+            wandb.log({"epoch": ep + 1, "loss": avg.avg, "lr": sched.get_last_lr()[0]})
 
     # ---------------- save final weights ----------------------------------------
     if rank == 0:
