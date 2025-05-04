@@ -78,13 +78,11 @@ def load_yolo_weights(model: torch.nn.Module, ckpt_path: str, device: str):
     print(f"[YOLO] {os.path.basename(ckpt_path)} → "
           f"copied {len(compatible):4d} tensors, skipped {len(skipped):2d} (shape mismatch)")
 
-
 # ----------------------------------------------------------------------------------
 # 2. loss wrapper ------------------------------------------------------------------
 # ----------------------------------------------------------------------------------
 
 FREEZE_GATE_EPOCHS = 3
-
 
 def compute_weighted_loss(
     moco_model: torch.nn.Module,
@@ -173,7 +171,7 @@ def train(args, hyp):
     mlp = init_mlp(device=device)
     yolos = init_yolos(num_classes=len(hyp["names"]), device=device)
 
-    # ➜ load the three MoCo‑pretrained YOLO checkpoints
+    # ➜ load the three MoCo‑pretrained YOLO checkpoints
     ckpt_paths = [
         "ym_weights/last_0.pt",
         "ym_weights/last_1.pt",
@@ -262,6 +260,10 @@ def train(args, hyp):
                 util.clip_gradients(mlp)
                 [util.clip_gradients(y) for y in yolos]
                 scaler.step(opt)
+                # Clamp MLP weights to be at least 0.1
+                with torch.no_grad():
+                    for p in mlp.parameters():
+                        p.clamp_(min=0.1)
                 scaler.update()
                 opt.zero_grad(set_to_none=True)
 
