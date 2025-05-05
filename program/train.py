@@ -83,7 +83,7 @@ def load_yolo_weights(model: torch.nn.Module, ckpt_path: str, device: str):
 # 2. loss wrapper ------------------------------------------------------------------
 # ----------------------------------------------------------------------------------
 
-FREEZE_GATE_EPOCHS = 3
+FREEZE_GATE_EPOCHS = 2
 
 
 def compute_weighted_loss(
