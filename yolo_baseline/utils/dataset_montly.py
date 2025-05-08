@@ -27,7 +27,7 @@ class Dataset(data.Dataset):
         self.count_images_by_month(filenames)
 
         # Read labels
-        cache = self.load_label(filenames)
+        cache = self.load_label(filenames, month_filter)
         labels, shapes = zip(*cache.values())
         self.labels = list(labels)
         self.shapes = numpy.array(shapes, dtype=numpy.float64)
@@ -104,87 +104,60 @@ class Dataset(data.Dataset):
         return torch.stack(samples, 0), torch.cat(targets, 0), shapes
 
     @staticmethod
-    def load_label(filenames, person_only=False):
+    def load_label(filenames, month_filter=None, person_only=False):
         # Setup cache directory
-        cache_dir = "/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset/cache"
-        print("Cache directory:", cache_dir)
+        cache_dir = "/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset/filtered_cache"
         os.makedirs(cache_dir, exist_ok=True)
 
-        # Build base name from the parent folder of the first filename
         base_name = os.path.basename(os.path.dirname(filenames[0]))
-        print("base_name:", base_name)
-
-        # Build the path for the label cache
-        label_cache_filename = f"{base_name}_label_cache.pt"
+        month_suffix = f"_{month_filter}" if month_filter else ""
+        label_cache_filename = f"{base_name}{month_suffix}_label_cache.pt"
         label_cache_path = os.path.join(cache_dir, label_cache_filename)
-        print("Cache path:", label_cache_path)
-
-        # Build the path for the person-only label cache
-        person_cache_filename = f"{base_name}_person_label_cache.pt"
-        person_cache_path = os.path.join(cache_dir, person_cache_filename)
-        print("Person cache path:", person_cache_path)
+        print(f"Cache path: {label_cache_path}")
 
         # If the label cache already exists, load it
         if os.path.exists(label_cache_path):
-            print(f"Loading label from {label_cache_path}")
-            print(f"Process Starting to load label cache...")
+            print(f"Loading label cache from {label_cache_path}")
             full_cache = torch.load(label_cache_path)
-            print(f"ProcessLabel cache loaded successfully.")
-            # Filter the cache to include only the filenames in your 'filenames' list
             filtered_cache = {k: v for k, v in full_cache.items() if k in filenames}
-            return filtered_cache  # Return only the matching subset
+            print(f"Loaded and filtered cache to {len(filtered_cache)} entries\n")
+            return filtered_cache
 
-        else:
-            print(f"Creating label from {label_cache_path}")
-
-        # Build up the label dictionary
+        # Otherwise build it from scratch
+        print(f"Cache not found at {label_cache_path}")
+        print(f"Creating label cache for {len(filenames)} images…")
         label_dict = {}
-        for filename in tqdm(filenames, desc="Processing labels"):
+        for filename in tqdm(filenames, total=len(filenames), desc="Building cache"):
             try:
                 with open(filename, 'rb') as f:
-                    image = Image.open(f)
-                    image.verify()
+                    img = Image.open(f)
+                    img.verify()
+                shape = img.size
 
-                shape = image.size
-                assert (shape[0] > 9) & (shape[1] > 9), f"Image size {shape} <10 pixels"
-                assert image.format.lower() in FORMATS, f"Invalid image format {image.format}"
+                # derive label path
+                img_folder = os.sep + "images" + os.sep
+                lbl_folder = os.sep + "labels" + os.sep
+                split = filename.rsplit(img_folder, 1)
+                lbl_path = lbl_folder.join(split).rsplit('.', 1)[0] + '.txt'
 
-                # Construct label path from the image path
-                image_folder = f"{os.sep}images{os.sep}"
-                label_folder = f"{os.sep}labels{os.sep}"
-                split_part = filename.rsplit(image_folder, 1)
-                swapped_folder_path = label_folder.join(split_part)
-                base_label_path = swapped_folder_path.rsplit('.', 1)[0]
-                label_path = f"{base_label_path}.txt"
-
-                if os.path.isfile(label_path):
-                    with open(label_path) as f:
-                        raw_lines = f.read().strip().splitlines()
-                        label = [line.split() for line in raw_lines if len(line)]
-                        label = numpy.array(label, dtype=numpy.float32)
-
-                    nl = len(label)
-                    if nl:
-                        assert label.shape[1] == 5, "Labels require 5 columns"
-                        assert (label >= 0).all(), "Negative label values"
-                        assert (label[:, 1:] <= 1).all(), "Non-normalized coordinates"
-                        # Remove any duplicate rows
-                        _, unique_idx = numpy.unique(label, axis=0, return_index=True)
-                        if len(unique_idx) < nl:
-                            label = label[unique_idx]
-                    else:
-                        label = numpy.zeros((0, 5), dtype=numpy.float32)
+                # read or init empty
+                if os.path.isfile(lbl_path):
+                    lines = open(lbl_path).read().strip().splitlines()
+                    arr = numpy.array([l.split() for l in lines], dtype=numpy.float32)
+                    # dedupe + sanitize...
+                    if arr.size:
+                        _, idx = numpy.unique(arr, axis=0, return_index=True)
+                        arr = arr[idx]
                 else:
-                    label = numpy.zeros((0, 5), dtype=numpy.float32)
+                    arr = numpy.zeros((0, 5), dtype=numpy.float32)
 
-                if filename:
-                    label_dict[filename] = [label, shape]
+                label_dict[filename] = [arr, shape]
+            except Exception:
+                continue
 
-            except FileNotFoundError:
-                pass
-
-        # Save to cache file
+        # Save to cache & report
         torch.save(label_dict, label_cache_path)
+        print(f"Saved new label cache ({len(label_dict)} entries) to {label_cache_path}\n")
         return label_dict
 
 
