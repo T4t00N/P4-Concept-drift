@@ -81,7 +81,13 @@ def extract_features(encoder, image_dir, batch_size=16, device='cuda', num_worke
 
 # Clustering function (unchanged)
 def cluster_features(features, num_clusters=100, random_state=42):
-    kmeans = KMeans(n_clusters=num_clusters, random_state=random_state, verbose=1)
+    kmeans = KMeans(
+        n_clusters=num_clusters,
+        init="k-means++",
+        n_init=20,  # more restarts ⇒ better chance of balanced clusters
+        random_state=random_state,
+        verbose=1
+    )
     cluster_labels = kmeans.fit_predict(features)
     return kmeans, cluster_labels
 
@@ -152,8 +158,8 @@ def visualize_clusters(features, cluster_labels, image_paths):
 # Main function (updated)
 def main():
     # Parameters to adjust
-    checkpoint_path = "moco_checkpoints/checkpoints_v2/moco_epoch_80.pt"  # Path to MoCo checkpoint
-    image_dir = "/ceph/project/P4-concept-drift/YOLOv8-Anton/data/cropped_images/test"  # Directory containing images
+    checkpoint_path = "moco_checkpoints/checkpoints_v1/moco_epoch_85.pt"  # Path to MoCo checkpoint
+    image_dir = "/ceph/project/P4-concept-drift/YOLOv8-Anton/data/cropped_images/train"  # Directory containing images
     num_clusters = 3  # Number of clusters for K-Means
     batch_size = 128  # Batch size for feature extraction
     num_workers = 4  # Number of workers for data loading
@@ -193,6 +199,8 @@ def main():
     print("Starting feature extraction...")
     image_paths, features = extract_features(model, image_dir, batch_size=batch_size,
                                              device=device, num_workers=num_workers)
+    norm = np.linalg.norm(features, axis=1, keepdims=True)
+    features = features / np.clip(norm, a_min=1e-9, a_max=None)
 
     # Clustering
     print("Starting clustering...")
