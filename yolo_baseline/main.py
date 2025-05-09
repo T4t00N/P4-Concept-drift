@@ -276,7 +276,7 @@ def test(args, params, model=None):
                              collate_fn=Dataset.collate_fn)
 
     if model is None:
-        model = torch.load('./weights/best.pt', map_location='cuda')['model'].float()
+        model = torch.load('./weights/best_02.pt', map_location='cuda')['model'].float()
 
     model.half()
     model.eval()

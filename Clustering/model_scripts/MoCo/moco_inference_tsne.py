@@ -4,7 +4,7 @@ import torch
 import numpy as np
 from PIL import Image
 from sklearn.cluster import KMeans
-from sklearn.manifold import TSNE  # Replaced PCA with TSNE
+from sklearn.manifold import TSNE
 import torchvision.transforms as T
 from torchvision.models import resnet50, ResNet50_Weights
 from tqdm import tqdm
@@ -13,27 +13,27 @@ import plotly.express as px
 import pandas as pd
 import torch.nn as nn
 import torch.nn.functional as F
-import random  # Added for random image selection
-import shutil  # Added for copying images
+import random
+import shutil
 
-# Define the MoCo model (unchanged)
+# Define the MoCo model
 class MoCoModel(nn.Module):
     def __init__(self, base_model, projection_dim=128):
         super(MoCoModel, self).__init__()
-        self.encoder = base_model  # ResNet-50 without the final layer
+        self.encoder = base_model
         self.projection_head = nn.Sequential(
-            nn.Linear(2048, 512),  # First layer (arbitrary hidden size, e.g., 512)
+            nn.Linear(2048, 512),
             nn.ReLU(),
-            nn.Linear(512, 128)  # Second layer to projection_dim
+            nn.Linear(512, 128)
         )
 
     def forward(self, x):
-        h = self.encoder(x)  # Feature representation (2048-dim)
-        z = self.projection_head(h)  # Projection for contrastive loss (128-dim)
+        h = self.encoder(x)
+        z = self.projection_head(h)
         return h, z
 
-# Feature extraction function (unchanged)
-def extract_features(encoder, image_dir, batch_size=16, device='cuda', num_workers=4):
+# Feature extraction function with February filter
+def extract_features(encoder, image_dir, batch_size=16, device='cuda', num_workers=4, prefix='202102'):
     encoder.eval()
     transform = T.Compose([
         T.CenterCrop(224),
@@ -41,11 +41,16 @@ def extract_features(encoder, image_dir, batch_size=16, device='cuda', num_worke
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    image_paths = sorted(glob.glob(os.path.join(image_dir, "*.jpg")) +
-                         glob.glob(os.path.join(image_dir, "*.jpeg")) +
-                         glob.glob(os.path.join(image_dir, "*.png")))
+    # Gather all image paths
+    image_paths = sorted(
+        glob.glob(os.path.join(image_dir, "*.jpg")) +
+        glob.glob(os.path.join(image_dir, "*.jpeg")) +
+        glob.glob(os.path.join(image_dir, "*.png"))
+    )
+    # Filter only February images (prefix '202102')
+    image_paths = [p for p in image_paths if os.path.basename(p).startswith(prefix)]
     if not image_paths:
-        raise FileNotFoundError(f"No image files found in {image_dir}")
+        raise FileNotFoundError(f"No February images found in {image_dir} with prefix {prefix}")
 
     class ImageDataset(torch.utils.data.Dataset):
         def __init__(self, image_paths, transform):
@@ -62,8 +67,10 @@ def extract_features(encoder, image_dir, batch_size=16, device='cuda', num_worke
             return image, path
 
     dataset = ImageDataset(image_paths, transform)
-    data_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
-                                              shuffle=False, num_workers=num_workers)
+    data_loader = torch.utils.data.DataLoader(
+        dataset, batch_size=batch_size,
+        shuffle=False, num_workers=num_workers
+    )
 
     all_features = []
     all_paths = []
@@ -71,7 +78,7 @@ def extract_features(encoder, image_dir, batch_size=16, device='cuda', num_worke
     for images, paths in tqdm(data_loader, desc="Extracting features", unit="batch"):
         images = images.to(device)
         with torch.no_grad():
-            features, _ = encoder(images)  # Use the feature vector, not the projection
+            features, _ = encoder(images)
         features = features.cpu().numpy()
         all_features.append(features)
         all_paths.extend(paths)
@@ -79,20 +86,20 @@ def extract_features(encoder, image_dir, batch_size=16, device='cuda', num_worke
     all_features = np.concatenate(all_features, axis=0)
     return all_paths, all_features
 
-# Clustering function (unchanged)
-def cluster_features(features, num_clusters=100, random_state=42):
+# Clustering function (3 clusters)
+def cluster_features(features, num_clusters=3, random_state=42):
     kmeans = KMeans(
         n_clusters=num_clusters,
         init="k-means++",
-        n_init=20,  # more restarts ⇒ better chance of balanced clusters
+        n_init=20,
         random_state=random_state,
         verbose=1
     )
     cluster_labels = kmeans.fit_predict(features)
     return kmeans, cluster_labels
 
-# Save clusters to CSV (unchanged)
-def save_clusters_to_csv(image_paths, cluster_labels, output_csv="moco_clusters.csv"):
+# Save clusters to CSV
+def save_clusters_to_csv(image_paths, cluster_labels, output_csv="moco_clusters_02.csv"):
     with open(output_csv, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(["image_path", "cluster_label"])
@@ -100,7 +107,7 @@ def save_clusters_to_csv(image_paths, cluster_labels, output_csv="moco_clusters.
             writer.writerow([path, label])
     print(f"Clustering results saved to {output_csv}")
 
-# Print cluster distribution (unchanged)
+# Print cluster distribution
 def print_cluster_distribution(cluster_labels):
     unique, counts = np.unique(cluster_labels, return_counts=True)
     total = len(cluster_labels)
@@ -109,20 +116,15 @@ def print_cluster_distribution(cluster_labels):
         percentage = count / total * 100
         print(f"Cluster {cluster}: {percentage:.2f}% images ({count} out of {total})")
 
-# New function to save one random image per cluster
-def save_sample_images(image_paths, cluster_labels, sample_folder="sample_images"):
-    """Save one random image per cluster to the sample_images folder."""
+# Save sample images
+def save_sample_images(image_paths, cluster_labels, sample_folder="sample_images_02"):
     if not os.path.exists(sample_folder):
         os.makedirs(sample_folder)
 
-    # Group image paths by cluster label
     cluster_dict = {}
     for path, label in zip(image_paths, cluster_labels):
-        if label not in cluster_dict:
-            cluster_dict[label] = []
-        cluster_dict[label].append(path)
+        cluster_dict.setdefault(label, []).append(path)
 
-    # Save one random image per cluster
     for label, paths in cluster_dict.items():
         random_image_path = random.choice(paths)
         image_name = os.path.basename(random_image_path)
@@ -130,10 +132,9 @@ def save_sample_images(image_paths, cluster_labels, sample_folder="sample_images
         shutil.copy(random_image_path, os.path.join(sample_folder, new_image_name))
     print(f"One random image per cluster saved to {sample_folder}")
 
-# Visualize clusters with t-SNE (modified from PCA)
+# Visualize clusters with t-SNE
 def visualize_clusters(features, cluster_labels, image_paths):
-    """Visualize clusters using t-SNE instead of PCA."""
-    tsne = TSNE(n_components=2, random_state=42)
+    tsne = TSNE(n_components=2, random_state=42, n_jobs=-1)
     features_2d = tsne.fit_transform(features)
 
     df = pd.DataFrame({
@@ -155,39 +156,31 @@ def visualize_clusters(features, cluster_labels, image_paths):
     fig.write_html("moco_interactive_tsne_plot.html")
     print("Interactive t-SNE plot saved as moco_interactive_tsne_plot.html")
 
-# Main function (updated)
+# Main function
 def main():
-    # Parameters to adjust
-    checkpoint_path = "moco_checkpoints/checkpoints_v1/moco_epoch_85.pt"  # Path to MoCo checkpoint
-    image_dir = "/ceph/project/P4-concept-drift/YOLOv8-Anton/data/cropped_images/train"  # Directory containing images
-    num_clusters = 3  # Number of clusters for K-Means
-    batch_size = 128  # Batch size for feature extraction
-    num_workers = 4  # Number of workers for data loading
-    output_csv = "moco_clusters.csv"  # Output CSV file
-    output_html = "moco_interactive_tsne_plot.html"  # Updated HTML visualization name
+    checkpoint_path = "moco_checkpoints/checkpoints_v1/moco_epoch_85.pt"
+    image_dir = "/ceph/project/P4-concept-drift/YOLOv8-Anton/data/cropped_images/train"
+    num_clusters = 3
+    batch_size = 128
+    num_workers = 4
+    output_csv = "moco_clusters_02.csv"
 
-    # Set device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
 
-    # Initialize the base model
     base_model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
-    base_model.fc = nn.Identity()  # Remove the final classification layer
+    base_model.fc = nn.Identity()
 
-    # Initialize the MoCo model
     model = MoCoModel(base_model).to(device)
 
-    # Load the checkpoint
     print(f"Loading MoCo checkpoint from {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
-    # Check if checkpoint has query or key model state dict and load accordingly
     if 'query_model_state_dict' in checkpoint:
         state_dict = checkpoint['query_model_state_dict']
     else:
         state_dict = checkpoint['model_state_dict']
 
-    # If the checkpoint was saved with DataParallel, remove 'module.' prefix
     if list(state_dict.keys())[0].startswith('module.'):
         state_dict = {k[7:]: v for k, v in state_dict.items()}
 
@@ -195,27 +188,25 @@ def main():
     model.eval()
     print("MoCo model loaded successfully")
 
-    # Feature extraction
-    print("Starting feature extraction...")
-    image_paths, features = extract_features(model, image_dir, batch_size=batch_size,
-                                             device=device, num_workers=num_workers)
+    print("Starting feature extraction for February images...")
+    image_paths, features = extract_features(
+        model,
+        image_dir,
+        batch_size=batch_size,
+        device=device,
+        num_workers=num_workers,
+        prefix='202102'
+    )
     norm = np.linalg.norm(features, axis=1, keepdims=True)
     features = features / np.clip(norm, a_min=1e-9, a_max=None)
 
-    # Clustering
-    print("Starting clustering...")
+    print("Starting KMeans clustering...")
     kmeans_model, cluster_labels = cluster_features(features, num_clusters=num_clusters)
 
-    # Save clusters to CSV
     save_clusters_to_csv(image_paths, cluster_labels, output_csv=output_csv)
-
-    # Print cluster distribution
     print_cluster_distribution(cluster_labels)
-
-    # Save one random image per cluster
     save_sample_images(image_paths, cluster_labels)
 
-    # Visualize clusters with t-SNE
     print("Visualizing clusters with t-SNE...")
     visualize_clusters(features, cluster_labels, image_paths)
 

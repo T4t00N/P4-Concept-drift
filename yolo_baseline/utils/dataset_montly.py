@@ -77,7 +77,7 @@ class Dataset(data.Dataset):
     @staticmethod
     def filter_by_month(filenames, month):
         """Filter filenames by month (format: MM) using the full path"""
-        month_pattern = re.compile(r'2021' + month)
+        month_pattern = re.compile(r'2020' + month)
         filtered_files = [f for f in filenames if month_pattern.search(f)]
         return filtered_files
 
@@ -86,7 +86,7 @@ class Dataset(data.Dataset):
         """Count images by month using the full path"""
         month_counts = {}
         for f in filenames:
-            match = re.search(r'2021(\d{2})', f)
+            match = re.search(r'2020(\d{2})', f)
             if match:
                 month = match.group(1)
                 month_counts[month] = month_counts.get(month, 0) + 1
