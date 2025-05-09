@@ -202,9 +202,9 @@ def train(args, params):
 
 
                 ckpt = {'model': copy.deepcopy(ema.ema).half()}
-                torch.save(ckpt, './weights/last.pt')
+                torch.save(ckpt, './weights/last_02.pt')
                 if best == last[1]:
-                    torch.save(ckpt, './weights/best.pt')
+                    torch.save(ckpt, './weights/best_02.pt')
                 del ckpt
                 suffix = f'_{args.month}' if args.month else ''
                 ckpt = {'model': copy.deepcopy(ema.ema).half()}
