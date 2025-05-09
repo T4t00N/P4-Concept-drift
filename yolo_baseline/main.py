@@ -55,8 +55,20 @@ def train(args, params):
     filenames = []
     path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset"
     with open(f'{path}/train.txt') as reader:
-        for filepath in reader.readlines():
+        for filepath in reader:
             filenames.append(filepath.strip())
+
+    # skip images with no labels
+    filtered = []
+    for img_path in filenames:
+        lbl_path = img_path.replace(f"{os.sep}images{os.sep}", f"{os.sep}labels{os.sep}")
+        lbl_path = lbl_path.rsplit('.', 1)[0] + '.txt'
+        if os.path.isfile(lbl_path) and os.path.getsize(lbl_path) > 0:
+            filtered.append(img_path)
+    num_dropped = len(filenames) - len(filtered)
+    filenames = filtered
+    print(f"Dropped {num_dropped} images with missing/empty labels, keeping {len(filenames)} for training")
+
 
 
     if args.month:
@@ -151,7 +163,19 @@ def train(args, params):
                 # Forward
                 with torch.cuda.amp.autocast():
                     outputs = model(samples)
-                loss = criterion(outputs, targets)
+
+                # Compute loss, but wrap in try/except to debug out‐of‐bounds
+                try:
+                    loss = criterion(outputs, targets)
+                except RuntimeError as e:
+                    # Move targets to CPU for safe inspection
+                    tgt_cpu = targets.cpu()
+                    img_idxs = tgt_cpu[:, 0].to(torch.int64)
+                    print(f"\n🛑 RuntimeError in loss at epoch {epoch + 1}, batch {i}:")
+                    print(" targets shape:", tgt_cpu.shape)
+                    print(" unique image‐indices in this batch:", torch.unique(img_idxs).tolist())
+                    print(" samples shape:", samples.shape)
+                    raise
 
                 m_loss.update(loss.item(), samples.size(0))
 
