@@ -106,12 +106,12 @@ class Dataset(data.Dataset):
     @staticmethod
     def load_label(filenames, month_filter=None, person_only=False):
         # Setup cache directory
-        cache_dir = "/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset/filtered_cache"
+        cache_dir = "monthly_cache"
         os.makedirs(cache_dir, exist_ok=True)
 
         base_name = os.path.basename(os.path.dirname(filenames[0]))
         month_suffix = f"_{month_filter}" if month_filter else ""
-        label_cache_filename = f"{base_name}{month_suffix}_label_cache.pt"
+        label_cache_filename = f"{base_name}{month_suffix}_label_cache_02.pt"
         label_cache_path = os.path.join(cache_dir, label_cache_filename)
         print(f"Cache path: {label_cache_path}")
 
