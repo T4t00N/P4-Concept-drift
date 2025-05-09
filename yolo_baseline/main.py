@@ -11,6 +11,7 @@ from torch.utils import data
 from nets import nn
 from utils import util
 from utils.dataset import Dataset
+from utils.dataset_montly import Dataset as MonthlyDataset
 
 warnings.filterwarnings("ignore")
 
@@ -57,8 +58,24 @@ def train(args, params):
         for filepath in reader.readlines():
             filenames.append(filepath.strip())
 
-    # Create Dataset (pass augment=False because we removed augmentation logic)
-    dataset = Dataset(filenames, args.input_size, params, augment=False)
+
+    if args.month:
+        dataset = MonthlyDataset(
+            filenames,
+            args.input_size,
+            params,
+            augment=False,
+            month_filter=args.month
+        )
+    else:
+        dataset = Dataset(
+            filenames,
+            args.input_size,
+            params,
+            augment=False
+        )
+
+
 
     # Sampler for distributed training if needed
     if args.world_size <= 1:
@@ -182,11 +199,20 @@ def train(args, params):
                 if last[1] > best:
                     best = last[1]
 
+
+
                 ckpt = {'model': copy.deepcopy(ema.ema).half()}
-                torch.save(ckpt, './weights/last.pt')
+                torch.save(ckpt, './weights/last_02.pt')
                 if best == last[1]:
-                    torch.save(ckpt, './weights/best.pt')
+                    torch.save(ckpt, './weights/best_02.pt')
                 del ckpt
+                suffix = f'_{args.month}' if args.month else ''
+                ckpt = {'model': copy.deepcopy(ema.ema).half()}
+                torch.save(ckpt, f'./weights/last{suffix}.pt')
+                if best == last[1]:
+                    torch.save(ckpt, f'./weights/best{suffix}.pt')
+
+
 
     # Cleanup
     if args.local_rank == 0:
@@ -206,7 +232,21 @@ def test(args, params, model=None):
             filenames.append(filepath.strip())
 
     # Create Dataset (again, augment=False, no mosaic)
-    dataset = Dataset(filenames, args.input_size, params, augment=False)
+    if args.month:
+        dataset = MonthlyDataset(
+            filenames,
+            args.input_size,
+            params,
+            augment=False,
+            month_filter=args.month
+        )
+    else:
+        dataset = Dataset(
+            filenames,
+            args.input_size,
+            params,
+            augment=False
+        )
     loader = data.DataLoader(dataset, 8, shuffle=False,
                              num_workers=32, pin_memory=True,
                              collate_fn=Dataset.collate_fn)
@@ -292,9 +332,11 @@ def main():
     parser.add_argument('--input-size', default=384, type=int)
     parser.add_argument('--batch-size', default=128, type=int)
     # Remove: parser.add_argument('--local_rank', default=0, type=int)
-    parser.add_argument('--epochs', default=5, type=int)
+    parser.add_argument('--epochs', default=80, type=int)
     parser.add_argument('--train', action='store_true')
     parser.add_argument('--test', action='store_true')
+    parser.add_argument('--month', type=str, default=None,
+                        help='Filter dataset by month (format MM or YYYYMM)')
 
     # Use parse_known_args to ignore unrecognized arguments
     args, _ = parser.parse_known_args()
