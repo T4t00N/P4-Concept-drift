@@ -115,12 +115,13 @@ def wh2xy(x):
     return y
 
 
-def non_max_suppression(prediction, conf_threshold=0.25, iou_threshold=0.45, max_det=30):
+def non_max_suppression(prediction, conf_threshold=0.25, iou_threshold=0.45):
     nc = prediction.shape[1] - 4  # number of classes
     xc = prediction[:, 4:4 + nc].amax(1) > conf_threshold  # candidates
 
     # Settings
     max_wh = 7680  # (pixels) maximum box width and height
+    max_det = 300  # the maximum number of boxes to keep after NMS
     max_nms = 30000  # maximum number of boxes into torchvision.ops.nms()
 
     start = time.time()
@@ -404,9 +405,6 @@ class ComputeLoss:
         self.bs = pred_scores.size(0)
         self.num_max_boxes = true_bboxes.size(1)
 
-        true_labels = true_labels.clone()
-        true_labels.clamp_(0, self.nc - 1)
-
         if self.num_max_boxes == 0:
             device = true_bboxes.device
             return (torch.full_like(pred_scores[..., 0], self.nc).to(device),
@@ -421,6 +419,14 @@ class ComputeLoss:
 
         overlaps = self.iou(true_bboxes.unsqueeze(2), pred_bboxes.unsqueeze(1))
         overlaps = overlaps.squeeze(3).clamp(0)
+        # You can add a check to ensure i[1] is within bounds
+        if i[1].max() >= self.nc or i[1].min() < 0:
+            print(
+                f"ERROR: i[1] is out of bounds for pred_scores access! Max index: {i[1].max()}, Min index: {i[1].min()}, Num classes: {self.nc}")
+            # Consider raising an error here or handling it, for example:
+            # raise IndexError(f"i[1] is out of bounds. Max index: {i[1].max()}, Min index: {i[1].min()}, Num classes: {self.nc}")
+
+
         align_metric = pred_scores[i[0], :, i[1]].pow(self.alpha) * overlaps.pow(self.beta)
         bs, n_boxes, _ = true_bboxes.shape
         lt, rb = true_bboxes.view(-1, 1, 4).chunk(2, 2)  # left-top, right-bottom

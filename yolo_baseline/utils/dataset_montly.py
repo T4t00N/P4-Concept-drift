@@ -77,7 +77,7 @@ class Dataset(data.Dataset):
     @staticmethod
     def filter_by_month(filenames, month):
         """Filter filenames by month (format: MM) using the full path"""
-        month_pattern = re.compile(r'2021' + month)
+        month_pattern = re.compile(r'2020' + month)
         filtered_files = [f for f in filenames if month_pattern.search(f)]
         return filtered_files
 
@@ -86,7 +86,7 @@ class Dataset(data.Dataset):
         """Count images by month using the full path"""
         month_counts = {}
         for f in filenames:
-            match = re.search(r'2021(\d{2})', f)
+            match = re.search(r'2020(\d{2})', f)
             if match:
                 month = match.group(1)
                 month_counts[month] = month_counts.get(month, 0) + 1
@@ -151,6 +151,40 @@ class Dataset(data.Dataset):
                 else:
                     arr = numpy.zeros((0, 5), dtype=numpy.float32)
 
+                if arr.size:
+                    # Define the number of expected classes from params if available,
+                    # otherwise default to 2 (0 and 1) as per your YAML.
+                    # This assumes params['names'] is accessible or self.params is available
+                    # If not directly available, you might need to pass num_classes to load_label
+                    # For now, we'll hardcode based on your stated intent for 2 classes.
+                    num_expected_classes = 2  # Based on your YAML (0: background, 1: person)
+                    max_valid_class_index = num_expected_classes - 1
+
+                    # The first column in 'arr' is the class_id.
+                    # Filter out labels with class indices outside the expected range [0, max_valid_class_index].
+                    valid_class_indices_mask = (arr[:, 0] >= 0) & (arr[:, 0] <= max_valid_class_index)
+
+                    if not numpy.all(valid_class_indices_mask):
+                        print(
+                            f"WARNING: File {lbl_path} contains class indices outside the expected range [0, {max_valid_class_index}].")
+                        print(
+                            f"Original labels in this file (class_id is the first column):\n{arr[~valid_class_indices_mask]}")
+                        arr = arr[valid_class_indices_mask]
+                        if not arr.size:
+                            print(
+                                f"INFO: After filtering, no valid labels (classes 0-{max_valid_class_index}) remain in {lbl_path}.")
+                            # Ensure arr is correctly shaped if empty
+                            arr = numpy.zeros((0, 5), dtype=numpy.float32)
+                        else:
+                            print(f"INFO: Keeping the following valid labels in {lbl_path}:\n{arr}")
+
+                    # Ensure 'arr' has the correct 2D shape even if it becomes empty or has one row after filtering
+                    if arr.ndim == 1 and arr.size > 0:  # handles case of a single valid label becoming a 1D array
+                        arr = arr.reshape(1, -1)
+                    elif not arr.size:  # handles case where all labels were invalid or file was empty
+                        arr = numpy.zeros((0, 5), dtype=numpy.float32)
+                # ---- END: Insert new code block here ----
+
                 label_dict[filename] = [arr, shape]
             except Exception:
                 continue
@@ -199,3 +233,4 @@ def resize_static(image, input_size):
     left, right = int(round(w - 0.1)), int(round(w + 0.1))
     image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_CONSTANT)
     return image, (r, r), (w, h)
+
