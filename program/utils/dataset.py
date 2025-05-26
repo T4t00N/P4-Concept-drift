@@ -7,17 +7,37 @@ import torch
 from PIL import Image
 from torch.utils import data
 from tqdm import tqdm
+from pathlib import Path
 
 FORMATS = 'bmp', 'dng', 'jpeg', 'jpg', 'mpo', 'png', 'tif', 'tiff', 'webp'
 
 
 class Dataset(data.Dataset):
-    def __init__(self, filenames, input_size, params, augment):
+    def __init__(self, filenames, input_size, params, augment, cache_base_dir=""):
         self.params = params
         self.augment = augment
         self.input_size = input_size
 
+        # --- Cache directory setup ---
+        # If cache_base_dir is provided, use it. Otherwise, default to a hidden folder
+        # in the current working directory, which is usually writable.
+        if cache_base_dir:
+            self.cache_dir = Path(cache_base_dir) / "filtered_cache"
+        else:
+            self.cache_dir = Path('./.yolo_cache') / "filtered_cache"
+
+        self.cache_dir.mkdir(parents=True, exist_ok=True) # Ensure the cache directory exists
+
+        # --- MODIFICATION START ---
+        # Define your specific, fixed cache path here
+        self.fixed_label_cache_path = Path("/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset/filtered_cache/train_label_cache.pt")
+        # Ensure the parent directory for the fixed cache path exists
+        self.fixed_label_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        # --- MODIFICATION END ---
+
+
         # Read labels
+        # load_label now needs access to self.cache_dir
         cache = self.load_label(filenames)
         labels, shapes = zip(*cache.values())
         self.labels = list(labels)
@@ -62,6 +82,9 @@ class Dataset(data.Dataset):
 
     def load_image(self, i):
         image = cv2.imread(self.filenames[i], cv2.IMREAD_GRAYSCALE)
+        # Check if image was loaded successfully
+        if image is None:
+            raise FileNotFoundError(f"Error loading image: {self.filenames[i]}. Please check file path and integrity.")
         h, w = image.shape[:2]
         return image, (h, w)
 
@@ -72,81 +95,106 @@ class Dataset(data.Dataset):
             item[:, 0] = i  # add target image index
         return torch.stack(samples, 0), torch.cat(targets, 0), shapes
 
-    @staticmethod
-    def load_label(filenames, person_only=False):
-        # Setup cache directory
-        cache_dir = "/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset/filtered_cache"
-        #print("Cache directory:", cache_dir)
-        os.makedirs(cache_dir, exist_ok=True)
-
-        # Build base name from the parent folder of the first filename
-        base_name = os.path.basename(os.path.dirname(filenames[0]))
-        #print("base_name:", base_name)
-
-        # Build the path for the label cache
-        label_cache_filename = f"{base_name}_label_cache.pt"
-        label_cache_path = os.path.join(cache_dir, label_cache_filename)
-        #print("Cache path:", label_cache_path)
-
-        # Build the path for the person-only label cache
-        person_cache_filename = f"{base_name}_person_label_cache.pt"
-        person_cache_path = os.path.join(cache_dir, person_cache_filename)
-        #print("Person cache path:", person_cache_path)
+    def load_label(self, filenames, person_only=False):
+        # --- MODIFICATION START ---
+        # Use the fixed path instead of dynamically generating it
+        label_cache_path = self.fixed_label_cache_path
+        # --- MODIFICATION END ---
 
         # If the label cache already exists, load it
-        if os.path.exists(label_cache_path):
-            return torch.load(label_cache_path)
-        else:
-            print(f"Creating label from {label_cache_path}")
+        if label_cache_path.exists():
+            try:
+                cached_data = torch.load(label_cache_path)
+                # Simple check for cache validity (number of files and content)
+                # You might want to remove or adjust this validity check if your fixed cache
+                # doesn't necessarily contain all 'filenames' from the current run,
+                # especially if it's a pre-generated "master" cache.
+                if isinstance(cached_data, dict) and len(cached_data) == len(filenames) and all(
+                        f in cached_data for f in filenames):
+                    print(f"Loaded label cache from {label_cache_path}")
+                    return cached_data
+                else:
+                    print(f"Cache {label_cache_path} is invalid or incomplete. Regenerating...")
+            except Exception as e:
+                print(f"Error loading cache from {label_cache_path}: {e}. Regenerating...")
+
+        print(f"Creating label cache in {label_cache_path}")
 
         # Build up the label dictionary
         label_dict = {}
+        # Iterate over filenames using tqdm for progress bar
         for filename in tqdm(filenames, desc="Processing labels"):
             try:
                 with open(filename, 'rb') as f:
-                    image = Image.open(f)
-                    image.verify()
+                    image_pil = Image.open(f)
+                    image_pil.verify()
 
-                shape = image.size
-                assert (shape[0] > 9) & (shape[1] > 9), f"Image size {shape} <10 pixels"
-                assert image.format.lower() in FORMATS, f"Invalid image format {image.format}"
+                shape = image_pil.size
+                assert (shape[0] > 9) & (shape[1] > 9), f"Image size {shape} <10 pixels: {filename}"
+                assert image_pil.format.lower() in FORMATS, f"Invalid image format {image_pil.format}: {filename}"
 
-                # Construct label path from the image path
                 image_folder = f"{os.sep}images{os.sep}"
                 label_folder = f"{os.sep}filtered_labels{os.sep}"
-                split_part = filename.rsplit(image_folder, 1)
-                swapped_folder_path = label_folder.join(split_part)
-                base_label_path = swapped_folder_path.rsplit('.', 1)[0]
-                label_path = f"{base_label_path}.txt"
 
+                lbl_path_str = str(filename)
+                if image_folder in lbl_path_str:
+                    split_part = lbl_path_str.rsplit(image_folder, 1)
+                    swapped_folder_path = label_folder.join(split_part)
+                    base_label_path = swapped_folder_path.rsplit('.', 1)[0]
+                    label_path = f"{base_label_path}.txt"
+                else:
+                    label_path = os.path.splitext(filename)[0] + ".txt"
+
+                label = numpy.zeros((0, 5), dtype=numpy.float32)
                 if os.path.isfile(label_path):
-                    with open(label_path) as f:
+                    with open(label_path, 'r') as f:
                         raw_lines = f.read().strip().splitlines()
-                        label = [line.split() for line in raw_lines if len(line)]
-                        label = numpy.array(label, dtype=numpy.float32)
+                        parsed_labels = []
+                        for line in raw_lines:
+                            if len(line.strip()) > 0:
+                                try:
+                                    parts = line.strip().split()
+                                    if len(parts) == 5:
+                                        cls = int(parts[0])
+                                        coords = [float(p) for p in parts[1:5]]
+                                        parsed_labels.append([cls] + coords)
+                                    else:
+                                        print(
+                                            f"Warning: Malformed label line in {label_path}: '{line.strip()}'. Skipping.")
+                                except ValueError:
+                                    print(
+                                        f"Warning: Could not parse numerical values in {label_path}: '{line.strip()}'. Skipping.")
+
+                        if parsed_labels:
+                            label = numpy.array(parsed_labels, dtype=numpy.float32)
 
                     nl = len(label)
                     if nl:
-                        assert label.shape[1] == 5, "Labels require 5 columns"
-                        assert (label >= 0).all(), "Negative label values"
-                        assert (label[:, 1:] <= 1).all(), "Non-normalized coordinates"
-                        # Remove any duplicate rows
+                        assert label.shape[1] == 5, f"Labels in {label_path} require 5 columns (class, x, y, w, h)"
+                        assert (label >= 0).all(), f"Negative label values found in {label_path}"
+                        assert (label[:, 1:] <= 1).all(), f"Non-normalized coordinates found in {label_path}"
                         _, unique_idx = numpy.unique(label, axis=0, return_index=True)
                         if len(unique_idx) < nl:
                             label = label[unique_idx]
-                    else:
-                        label = numpy.zeros((0, 5), dtype=numpy.float32)
-                else:
-                    label = numpy.zeros((0, 5), dtype=numpy.float32)
 
-                if filename:
-                    label_dict[filename] = [label, shape]
+                label_dict[filename] = [label, shape]
 
-            except FileNotFoundError:
-                pass
+            except FileNotFoundError as e:
+                print(
+                    f"Warning: Image file not found for label processing: {filename}. Error: {e}. Skipping this entry.")
+                continue
+            except Exception as e:
+                print(f"Error processing {filename}: {e}. Skipping this entry.")
+                continue
 
         # Save to cache file
-        torch.save(label_dict, label_cache_path)
+        try:
+            torch.save(label_dict, label_cache_path)
+            print(f"Saved label cache to {label_cache_path}")
+        except Exception as e:
+            print(f"Error saving label cache to {label_cache_path}: {e}")
+            print(f"Please ensure write permissions for: {label_cache_path.parent}")
+
         return label_dict
 
 
@@ -178,13 +226,19 @@ def resize_static(image, input_size):
     shape = image.shape[:2]
     r = min(input_size / shape[0], input_size / shape[1])
     r = min(r, 1.0)  # only downscale if needed
-    pad = int(round(shape[1] * r)), int(round(shape[0] * r))
-    w = (input_size - pad[0]) / 2
-    h = (input_size - pad[1]) / 2
 
-    if shape[::-1] != pad:
-        image = cv2.resize(image, dsize=pad, interpolation=cv2.INTER_LINEAR)
-    top, bottom = int(round(h - 0.1)), int(round(h + 0.1))
-    left, right = int(round(w - 0.1)), int(round(w + 0.1))
+    # Calculate new unpadded shape
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+
+    # Calculate padding for letterbox
+    dw, dh = (input_size - new_unpad[0]) / 2, (input_size - new_unpad[1]) / 2
+
+    if shape[::-1] != new_unpad:  # if not already the target unpadded shape
+        image = cv2.resize(image, dsize=new_unpad, interpolation=cv2.INTER_LINEAR)
+
+    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+
+    # Apply padding
     image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_CONSTANT)
-    return image, (r, r), (w, h)
+    return image, (r, r), (left, top) # Return image, ratio_tuple, pad_tuple

@@ -162,7 +162,6 @@ def non_max_suppression(prediction, conf_threshold=0.25, iou_threshold=0.45):
 
     return outputs
 
-
 def smooth(y, f=0.05):
     # Box filter of fraction f
     nf = round(len(y) * f * 2) // 2 + 1  # number of filter elements (must be odd)

@@ -326,11 +326,21 @@ class ComputeLoss:
         self.dfl_ch = m.dfl.ch
         self.project = torch.arange(self.dfl_ch, dtype=torch.float, device=device)
 
-    def __call__(self, outputs, targets):
-        x = outputs[1] if isinstance(outputs, tuple) else outputs
-        output = torch.cat([i.view(x[0].shape[0], self.no, -1) for i in x], 2)
-        pred_output, pred_scores = output.split((4 * self.dfl_ch, self.nc), 1)
+    def __call__(self, outputs, targets, epoch=0):
+        feats, x = outputs  # Unpack feats and detection outputs
+        # Handle list of detection outputs
+        if isinstance(x, list):
+            batch_size = x[0].shape[0]  # Should be 1
+            outputs = [layer.view(batch_size, self.no, -1) for layer in x]
+            output = torch.cat(outputs, 2)  # [batch_size, self.no, total_anchors]
+        else:
+            output = x  # If your model outputs a tensor directly
 
+        # Generate anchors using feature maps
+        anchor_points, stride_tensor = make_anchors(feats, self.stride, 0.5)
+
+        # Rest of the loss computation
+        pred_output, pred_scores = output.split((4 * self.dfl_ch, self.nc), 1)
         pred_output = pred_output.permute(0, 2, 1).contiguous()
         pred_scores = pred_scores.permute(0, 2, 1).contiguous()
 
@@ -374,12 +384,14 @@ class ComputeLoss:
         target_scores_sum = target_scores.sum()
 
         # cls loss
+        if target_scores_sum == 0:  # all-background image → zero loss
+            return torch.tensor(0.0, device=self.device)
         loss_cls = self.bce(pred_scores, target_scores.to(pred_scores.dtype))
         loss_cls = loss_cls.sum() / target_scores_sum
 
         # box loss
-        loss_box = torch.zeros(1, device=self.device)
-        loss_dfl = torch.zeros(1, device=self.device)
+        loss_box = torch.tensor(0.0, device=self.device)
+        loss_dfl = torch.tensor(0.0, device=self.device)
         if fg_mask.sum():
             # IoU loss
             weight = torch.masked_select(target_scores.sum(-1), fg_mask).unsqueeze(-1)
@@ -406,12 +418,11 @@ class ComputeLoss:
         self.num_max_boxes = true_bboxes.size(1)
 
         if self.num_max_boxes == 0:
-            device = true_bboxes.device
-            return (torch.full_like(pred_scores[..., 0], self.nc).to(device),
-                    torch.zeros_like(pred_bboxes).to(device),
-                    torch.zeros_like(pred_scores).to(device),
-                    torch.zeros_like(pred_scores[..., 0]).to(device),
-                    torch.zeros_like(pred_scores[..., 0]).to(device))
+            device = pred_scores.device
+            target_bboxes = torch.zeros_like(pred_bboxes).to(device)
+            target_scores = torch.zeros_like(pred_scores).to(device)
+            fg_mask = torch.zeros_like(pred_scores[..., 0]).bool().to(device)
+            return target_bboxes, target_scores, fg_mask
 
         i = torch.zeros([2, self.bs, self.num_max_boxes], dtype=torch.long)
         i[0] = torch.arange(end=self.bs).view(-1, 1).repeat(1, self.num_max_boxes)
@@ -490,6 +501,8 @@ class ComputeLoss:
     @staticmethod
     def iou(box1, box2, eps=1e-7):
         # Returns Intersection over Union (IoU) of box1(1,4) to box2(n,4)
+
+
 
         # Get the coordinates of bounding boxes
         b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, -1)
