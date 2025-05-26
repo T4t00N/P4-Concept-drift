@@ -207,14 +207,22 @@ class YOLO(torch.nn.Module):
 
         img_dummy = torch.zeros(1, 1, 256, 256)
         self.head = Head(num_classes, (width[3], width[4], width[5]))
-        self.head.stride = torch.tensor([256 / x.shape[-2] for x in self.forward(img_dummy)])
+
+        # Compute feature maps directly
+        feats = self.net(img_dummy)
+        feats = self.fpn(feats)
+        self.head.stride = torch.tensor([256 / feat.shape[-2] for feat in feats])
         self.stride = self.head.stride
         self.head.initialize_biases()
 
-    def forward(self, x):
-        x = self.net(x)
-        x = self.fpn(x)
-        return self.head(list(x))
+    def forward(self, x, return_feats=False):
+        feats = self.net(x)
+        feats = self.fpn(feats)
+        outputs = self.head(list(feats))
+        if self.training or return_feats:
+            return feats, outputs  # Return tuple if training or requested
+        else:
+            return outputs  # Return only outputs otherwise
 
     def fuse(self):
         for m in self.modules():

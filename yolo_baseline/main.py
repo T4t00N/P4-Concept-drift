@@ -53,8 +53,8 @@ def train(args, params):
 
     # Load training filenames
     filenames = []
-    path = r"/ceph/project/P4-concept-drift/final_yolo_data_format/YOLOv8-pt/Dataset"
-    with open(f'{path}/train.txt') as reader:
+    path = r"/ceph/project/P4-concept-drift/final/standard/cluster_txts"
+    with open(f'{path}/cluster_2.txt') as reader:
         for filepath in reader:
             filenames.append(filepath.strip())
 
@@ -103,7 +103,7 @@ def train(args, params):
                              pin_memory=True,
                              collate_fn=Dataset.collate_fn)
 
-    # DDP (DistributedDataParallel) if needed
+    # DDP
     if args.world_size > 1:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
         model = torch.nn.parallel.DistributedDataParallel(module=model,
@@ -168,7 +168,6 @@ def train(args, params):
                 try:
                     loss = criterion(outputs, targets)
                 except RuntimeError as e:
-                    # Move targets to CPU for safe inspection
                     tgt_cpu = targets.cpu()
                     img_idxs = tgt_cpu[:, 0].to(torch.int64)
                     print(f"\n🛑 RuntimeError in loss at epoch {epoch + 1}, batch {i}:")
@@ -223,10 +222,8 @@ def train(args, params):
                 if last[1] > best:
                     best = last[1]
 
-
-
                 ckpt = {'model': copy.deepcopy(ema.ema).half()}
-                torch.save(ckpt, './weights/last_02.pt')
+                torch.save(ckpt, 'weights/ym_seasonal_weights/ym_1/last_1.pt')
                 if best == last[1]:
                     torch.save(ckpt, './weights/best_02.pt')
                 del ckpt
@@ -235,8 +232,6 @@ def train(args, params):
                 torch.save(ckpt, f'./weights/last{suffix}.pt')
                 if best == last[1]:
                     torch.save(ckpt, f'./weights/best{suffix}.pt')
-
-
 
     # Cleanup
     if args.local_rank == 0:
@@ -276,7 +271,7 @@ def test(args, params, model=None):
                              collate_fn=Dataset.collate_fn)
 
     if model is None:
-        model = torch.load('./weights/best_02.pt', map_location='cuda')['model'].float()
+        model = torch.load('weights/ym_seasonal_weights/ym_1/last_1.pt', map_location='cuda')['model'].float()
 
     model.half()
     model.eval()
@@ -354,7 +349,7 @@ def main():
     print("Starting main function")
     parser = argparse.ArgumentParser()
     parser.add_argument('--input-size', default=384, type=int)
-    parser.add_argument('--batch-size', default=128, type=int)
+    parser.add_argument('--batch-size', default=32, type=int)
     # Remove: parser.add_argument('--local_rank', default=0, type=int)
     parser.add_argument('--epochs', default=80, type=int)
     parser.add_argument('--train', action='store_true')

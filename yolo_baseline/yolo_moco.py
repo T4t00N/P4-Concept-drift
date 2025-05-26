@@ -204,7 +204,6 @@ def test(args, params, model=None):
     # Create Dataset
     validation_label = args.val_cluster_label if not args.use_original_val else 'original_val'  # Use a descriptive placeholder if needed for caching
     dataset = Dataset(filenames, args.input_size, params, augment=False, cluster_label=validation_label)
-    # NEW: shard val set across GPUs
     if args.world_size > 1:
         val_sampler = data.distributed.DistributedSampler(dataset,
                                                           shuffle=False)
@@ -239,7 +238,7 @@ def test(args, params, model=None):
     metrics = []
     p_bar = tqdm.tqdm(loader, desc=('%10s' * 3) % ('precision', 'recall', 'mAP'))
 
-    # WBF parameters (adjust as needed)
+    # WBF parameters
     wbf_iou_thr = 0.55
     wbf_skip_box_thr = 0.001
     wbf_weights = [1, 1, 1] # Equal weights for the three models
@@ -277,9 +276,9 @@ def test(args, params, model=None):
                         correct.cpu(),  # (0, nIoU)
                         torch.zeros(0).cpu(),  # confidences  (0,)
                         torch.zeros(0, dtype=torch.float32).cpu(),  # pred classes (0,)
-                        labels[:, 0].cpu()  # gt classes   (nlabels,)
-                    ))# Ensure on CPU for numpy conversion later
-                continue # Go to next image
+                        labels[:, 0].cpu()
+                    ))
+                continue
 
             detections = output.clone()
             # Scale fused detections to original image size
@@ -291,9 +290,7 @@ def test(args, params, model=None):
                 util.scale(tbox, samples[i].shape[1:], shapes[i][0], shapes[i][1])
                 t_tensor = torch.cat((labels[:, 0:1], tbox), 1) # Target tensor [class, x1, y1, x2, y2]
 
-                # Calculate IoU between fused detections and ground truth
                 iou = util.box_iou(t_tensor[:, 1:], detections[:, :4]) # [n_targets, n_detections]
-                # Find correct matches for each IoU threshold
                 correct_class = t_tensor[:, 0:1] == detections[:, 5] # Check class match [n_targets, n_detections]
 
                 for j in range(n_iou): # For each IoU threshold
@@ -303,22 +300,15 @@ def test(args, params, model=None):
                         # matches = [target_idx, detection_idx, iou_value]
                         matches = torch.cat((torch.stack(x, 1), iou[x[0], x[1]][:, None]), 1).cpu().numpy()
                         if x[0].shape[0] > 1: # If more than one match
-                             # Sort by IoU descending
                             matches = matches[matches[:, 2].argsort()[::-1]]
-                            # Keep only best detection match for each target
                             matches = matches[numpy.unique(matches[:, 0], return_index=True)[1]]
-                            # Keep only best target match for each detection
                             matches = matches[numpy.unique(matches[:, 1], return_index=True)[1]]
-                        # Mark the matched detections as correct for this IoU threshold
                         correct[matches[:, 1].astype(int), j] = True
 
-            # Append metrics: (correct_flags, detection_confidence, detection_class, target_class)
-            # Ensure all tensors are moved to CPU before appending if they will be concatenated later into NumPy arrays
             metrics.append((correct.cpu(), output[:, 4].cpu(), output[:, 5].cpu(), labels[:, 0].cpu()))
-            # --- End of original metrics calculation logic ---
 
     # Compute final metrics
-    if not metrics: # Handle case where metrics list is empty
+    if not metrics:
         print("No metrics recorded.")
         return 0.0, 0.0
 
@@ -329,19 +319,15 @@ def test(args, params, model=None):
         metrics_np = [m.numpy() for m in metrics_cat]
 
         if len(metrics_np) and metrics_np[0].any():
-            # Pass requires_grad=False tensors if compute_ap doesn't handle them
             tp, fp, m_pre, m_rec, map50, mean_ap = util.compute_ap(*metrics_np) # Pass num_classes if needed by compute_ap
         else:
              print("No detections or no correct detections found.")
-             tp, fp, m_pre, m_rec, map50, mean_ap = (0,) * 6 # Or appropriate default values
+             tp, fp, m_pre, m_rec, map50, mean_ap = (0,) * 6
 
     except Exception as e:
          print(f"Error during metric computation: {e}")
          print(f"Metrics list length: {len(metrics)}")
-         # Optionally print shapes or types of elements in metrics for debugging
-         # for idx, item in enumerate(metrics):
-         #     print(f"Metric item {idx}: {[t.shape if hasattr(t,'shape') else type(t) for t in item]}")
-         m_pre, m_rec, map50, mean_ap = 0., 0., 0., 0. # Default values on error
+         m_pre, m_rec, map50, mean_ap = 0., 0., 0., 0.
 
 
     # Print metrics
@@ -394,7 +380,6 @@ def main():
         if not os.path.exists('weights'):
             os.makedirs('weights')
 
-    #util.setup_seed()
     util.setup_multi_processes()
 
     with open(os.path.join('utils', 'args.yaml'), errors='ignore') as f:
