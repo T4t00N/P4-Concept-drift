@@ -59,7 +59,6 @@ def load_checkpoint(
 
 
 # ---------------- preprocessing ----------------------------------------------
-
 def preprocess_image(
     path: str | os.PathLike, input_sz: int
 ) -> tuple[torch.Tensor, Tuple[int, int], Tuple[float, float], Tuple[float, float]]:
@@ -161,7 +160,6 @@ def run_single_image(
 
 
 # ---------------- drawing ----------------------------------------------------
-
 def draw_boxes_and_save(
     img_path: str | os.PathLike,
     detections: List[Tuple[int, float, float, float, float, float]],

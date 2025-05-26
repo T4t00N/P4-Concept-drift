@@ -1,27 +1,19 @@
-#!/usr/bin/env python3
-# train.py – frozen-YOLO, frozen-MoCo, batch-size 1.  Only the MLP learns.
-# ------------------------------------------------------------------------------
 import argparse
-import copy
-import glob
 import os
 import time
 from pathlib import Path
 from contextlib import nullcontext
-
 import numpy as np
 import torch
 from torch.utils import data
 import tqdm
 import yaml
-
-# ---------------- third-party ---------------------------------------------------
-import wandb  # experiment tracking
+import wandb
 
 # ---------------- local project imports ----------------------------------------
 import models.MoCo_inference as fv
 from nets.mlp_net import MLP
-from nets import nn  # YOLO back-bones
+from nets import nn
 from utils import util
 from utils.dataset import Dataset
 
@@ -216,7 +208,7 @@ def train(args, hyp):
 
     criterion = util.ComputeLoss(yolos[0], hyp)
 
-    # ---------------- DDP (only the MLP needs it) ------------------------
+    # ---------------- DDP ------------------------
     if world > 1:
         mlp = torch.nn.parallel.DistributedDataParallel(
             mlp, device_ids=[rank], output_device=rank)
@@ -294,39 +286,29 @@ def train(args, hyp):
                          pg["initial_lr"] * lr_lambda(ep, args.epochs, hyp["lrf"])])
 
             with autocast():
-                # Pass the dynamically calculated current_ent_weight and temperature from hyp,
-                # plus the new elastic_alpha.
-                # Now, compute_weighted_loss returns total_loss, avg_weights, AND weights
                 loss, avg_weights, sample_weights = compute_weighted_loss(
                     moco, mlp, yolos, samples, targets, criterion,
                     temperature=hyp["temperature"],
                     ent_weight=current_ent_weight,
                     elastic_alpha=elastic_alpha,
-                    return_weights=True  # Make sure this is True to get the weights
+                    return_weights=True
                 )
 
-            # --- COLLAPSE AVOIDANCE MECHANISM [NEW] ---
-            # Checks if the average weights have collapsed into a 0.6, 0.2, 0.2 permutation.
-            # If so, it randomizes the MLP weights to escape this state.
-
-            # Target weights are sorted to make the check order-invariant.
             target_collapse_state = torch.tensor([0.2, 0.2, 0.6], device=device)
             sorted_avg_weights, _ = torch.sort(avg_weights)
 
             # Check if current weights are very close to the collapse state.
             if torch.allclose(sorted_avg_weights, target_collapse_state, atol=1e-2):
-                if rank == 0:  # Log only on the main process
+                if rank == 0:
                     print("\n--- COLLAPSE CONDITION DETECTED ---")
                     print(f"  Weights ~{avg_weights.cpu().numpy().round(3)}. Randomizing MLP to escape.")
                     print("-----------------------------------\n")
 
-                # Access the underlying model, handling the DDP wrapper if present.
                 model_to_randomize = mlp.module if world > 1 else mlp
 
                 # Re-initialize the MLP parameters with new random values.
                 with torch.no_grad():
                     for param in model_to_randomize.parameters():
-                        # A simple randomization from a uniform distribution.
                         param.data.uniform_(-0.1, 0.1)
 
             scaler.scale(loss).backward()
@@ -347,11 +329,8 @@ def train(args, hyp):
                 ckpt_dir.mkdir(exist_ok=True, parents=True)
                 ckpt_path = ckpt_dir / "iter_3000.pt"
                 save_model(mlp, ckpt_path)
-                if wandb_run:  # Check if wandb is initialized
-                    wandb.save(str(ckpt_path))
-                print(f"\nCheckpoint saved at iteration 3000 to {ckpt_path}")
 
-            if (i + 1) % 100 == 0 and rank == 0:  # only in main process
+            if (i + 1) % 100 == 0 and rank == 0:
                 current = i + 1
                 pbar.set_description(
                     f"Epoch {ep + 1}/{args.epochs} | "
@@ -368,7 +347,7 @@ def train(args, hyp):
                     num_samples_to_show = min(3, sample_weights.size(0))  # Show up to 3 samples if batch size allows
 
                     # Randomly select indices for the samples
-                    if sample_weights.size(0) > 0:  # Ensure there are samples in the batch
+                    if sample_weights.size(0) > 0:
                         sample_indices = torch.randperm(sample_weights.size(0))[:num_samples_to_show]
                         for idx in sample_indices:
                             print(
@@ -408,11 +387,9 @@ def train(args, hyp):
         wandb.save(str(save_path))
         wandb_run.finish()
 
-
 # ------------------------------------------------------------------------------
 # 5. CLI
 # ------------------------------------------------------------------------------
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-size", type=int, default=384)
@@ -442,15 +419,11 @@ def main():
     with open(hyp_path) as f:
         hyp = yaml.safe_load(f)
 
-    # --- Hyperparameters for dynamic entropy and new elastic bounds ---
+    # Entropy, elastic and temperature parameters
     hyp["temperature"] = hyp.get("temperature", 10.0)
-
-    # Entropy decay parameters
     hyp["entropy_start_value"] = hyp.get("entropy_start_value", 50.0)
     hyp["entropy_end_value"] = hyp.get("entropy_end_value", 0.5)
     hyp["entropy_decay_iterations"] = hyp.get("entropy_decay_iterations", 1000)
-
-    # New: Elasticity penalty weight
     hyp["elastic_alpha"] = hyp.get("elastic_alpha", 1.0)  # Initial value for the elastic penalty
 
     if args.train:

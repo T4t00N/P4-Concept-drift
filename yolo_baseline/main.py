@@ -103,7 +103,7 @@ def train(args, params):
                              pin_memory=True,
                              collate_fn=Dataset.collate_fn)
 
-    # DDP (DistributedDataParallel) if needed
+    # DDP
     if args.world_size > 1:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
         model = torch.nn.parallel.DistributedDataParallel(module=model,
@@ -168,7 +168,6 @@ def train(args, params):
                 try:
                     loss = criterion(outputs, targets)
                 except RuntimeError as e:
-                    # Move targets to CPU for safe inspection
                     tgt_cpu = targets.cpu()
                     img_idxs = tgt_cpu[:, 0].to(torch.int64)
                     print(f"\n🛑 RuntimeError in loss at epoch {epoch + 1}, batch {i}:")
@@ -222,8 +221,6 @@ def train(args, params):
                 # Update best checkpoint
                 if last[1] > best:
                     best = last[1]
-
-
 
                 ckpt = {'model': copy.deepcopy(ema.ema).half()}
                 torch.save(ckpt, 'weights/ym_seasonal_weights/ym_1/last_1.pt')
