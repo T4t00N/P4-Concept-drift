@@ -43,12 +43,6 @@ To test the system use this sample:
   </a>
 </p>
 
-### Proposed Model Architecture
-
-<div align="center"> 
-  <img src="misc/baseline_architecture.png" alt="Architecture Diagram" />
-</div>
-
 ### How to Run locally
 
 #### 🔍 Inference
